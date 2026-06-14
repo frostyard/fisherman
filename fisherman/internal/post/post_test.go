@@ -645,6 +645,59 @@ func TestDefaultComposeFsDeployEtcDir_BLSEntry(t *testing.T) {
 	}
 }
 
+// TestIsComposeFsNative verifies the composefs detection logic:
+// presence of ostree/deploy/ → ostree backend; absence → composefs.
+func TestIsComposeFsNative_ComposeFsLayout(t *testing.T) {
+	// Composefs layout: ostree/bootc/ exists but NOT ostree/deploy/.
+	// WriteHostname must route to the ComposeFsDeployEtcDirFn path.
+	target := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(target, "ostree", "bootc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deployEtc := filepath.Join(target, "state", "deploy", "abc", "etc")
+	if err := os.MkdirAll(deployEtc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := post.ComposeFsDeployEtcDirFn
+	post.ComposeFsDeployEtcDirFn = func(string) (string, error) { return deployEtc, nil }
+	t.Cleanup(func() { post.ComposeFsDeployEtcDirFn = old })
+
+	if err := post.WriteHostname(target, "composehost"); err != nil {
+		t.Fatalf("WriteHostname on composefs layout: %v", err)
+	}
+	// Must write to the composefs deploy etc, NOT $TARGET/etc/.
+	data, err := os.ReadFile(filepath.Join(deployEtc, "hostname"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "composehost\n" {
+		t.Errorf("got %q, want %q", string(data), "composehost\n")
+	}
+}
+
+func TestIsComposeFsNative_OstreeLayout(t *testing.T) {
+	// Ostree layout: ostree/deploy/ exists → NOT composefs.
+	target := t.TempDir()
+	fakeDeployDir := filepath.Join(target, "ostree", "deploy", "default", "deploy", "hash.0")
+	if err := os.MkdirAll(fakeDeployDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := post.DeploymentDirFn
+	post.DeploymentDirFn = func(string) (string, error) { return fakeDeployDir, nil }
+	t.Cleanup(func() { post.DeploymentDirFn = old })
+
+	if err := post.WriteHostname(target, "ostreehost"); err != nil {
+		t.Fatalf("WriteHostname on ostree layout: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(fakeDeployDir, "etc", "hostname"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ostreehost\n" {
+		t.Errorf("got %q, want %q", string(data), "ostreehost\n")
+	}
+}
+
 // TestDefaultComposeFsDeployEtcDir_Fallback verifies the fallback to newest
 // state/deploy entry when no BLS entry is present.
 func TestDefaultComposeFsDeployEtcDir_Fallback(t *testing.T) {
