@@ -204,6 +204,19 @@ func partition(disk, script string) error {
 		time.Sleep(500 * time.Millisecond)
 		_ = runner.Run("partprobe", disk)
 		_ = runner.Run("udevadm", "settle")
+		// Wipe stale filesystem signatures that udev re-probes after partprobe.
+		// Without this, mkfs fails with "Device or resource busy" on disks
+		// that carried a filesystem from a prior aborted install: the kernel's
+		// btrfs/ext4 drivers re-open the partition node on udev probe, and
+		// mkfs then sees a busy device even though the partition is unmounted.
+		for i := 1; i <= 4; i++ {
+			part := PartName(disk, i)
+			if _, statErr := os.Stat(part); statErr == nil {
+				fmt.Fprintf(os.Stdout, "+ wipefs -af %s (clear stale signatures after --no-reread)\n", part)
+				_ = runner.Run("wipefs", "-af", part)
+			}
+		}
+		_ = runner.Run("udevadm", "settle")
 	}
 
 	// Brief sleep then settle — mirrors bootc's approach.
