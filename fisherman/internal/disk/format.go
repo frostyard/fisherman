@@ -3,6 +3,7 @@ package disk
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/tuna-os/fisherman/internal/progress"
 	"github.com/tuna-os/fisherman/internal/runner"
@@ -13,11 +14,16 @@ func FormatEFI(part string) error {
 	return runner.Run("mkfs.fat", "-F32", "-n", "EFI-SYSTEM", part)
 }
 
-// FormatRoot formats a device as the root filesystem (xfs or btrfs).
+// FormatRoot formats a device as the root filesystem (xfs, ext4, or btrfs).
 func FormatRoot(dev, filesystem string) error {
 	switch filesystem {
 	case "xfs":
 		return runner.Run("mkfs.xfs", "-f", "-L", "root", dev)
+	case "ext4":
+		// -O verity is required for composefs (bootc's --composefs-backend uses
+		// FS_IOC_ENABLE_VERITY on individual files; ext4 only supports this when
+		// the verity feature is enabled at format time).
+		return runner.Run("mkfs.ext4", "-F", "-L", "root", "-O", "verity", dev)
 	case "btrfs":
 		return runner.Run("mkfs.btrfs", "-f", "-L", "root", dev)
 	default:
@@ -137,4 +143,19 @@ func MountEFI(rootMount, efiPart string) error {
 		return fmt.Errorf("mkdir %s: %w", efiDir, err)
 	}
 	return runner.Run("mount", efiPart, efiDir)
+}
+
+// FormatVar formats a device as XFS for use as a dedicated /var partition.
+func FormatVar(dev string) error {
+	return runner.Run("mkfs.xfs", "-f", "-L", "var", dev)
+}
+
+// UUID returns the filesystem UUID of dev using blkid.
+// Returns an empty string on any error (non-fatal; fstab write will be skipped).
+func UUID(dev string) string {
+	out, err := runner.Output("blkid", "-s", "UUID", "-o", "value", dev)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }

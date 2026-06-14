@@ -1,7 +1,31 @@
 # Bootcrew CI regression test matrix.
-# Used by both bootcrew-fast.yml (PR gate) and bootcrew-nightly.yml (full install).
-# Add new images here; both workflows pick them up automatically.
+# Used by bootcrew-fast.yml (PR gate, disk-ops), bootcrew-vm.yml (PR gate, VM boot),
+# and bootcrew-nightly.yml (full install).
+# Add new images here; all workflows pick them up automatically.
+# 
+# vm_boot: true — include in bootcrew-vm.yml for E2E VM boot tests on every PR
+#          false (default) — skip in VM boot tests (reserved for nightly + disk-ops)
+# required: true — failure of this image fails the workflow (use for canary
+#          images that exercise each install backend). Required canaries:
+#          - dakota:        composefs-backend + systemd-boot
+#          - centos-bootc:  ostree-backend + grub2
+#          Other vm_boot images run advisory: their failures show up in the
+#          job summary but do not fail the workflow. Frees us from chasing
+#          per-image flakes while still keeping signal on the backends that
+#          matter.
 images:
+  - name: dakota
+    image: ghcr.io/projectbluefin/dakota:latest
+    filesystem: ext4
+    composefs_backend: true
+    bootloader: systemd
+    unified_storage: false
+    selinux_disabled: false
+    flatpaks: []
+    vm_boot: true  # PRIMARY PRODUCTION IMAGE - critical to test on every PR
+    required: true # composefs + systemd-boot canary
+    build_ssh_image: true
+
   - name: bluefin-lts
     image: ghcr.io/ublue-os/bluefin:lts
     filesystem: xfs
@@ -9,6 +33,18 @@ images:
     unified_storage: false
     selinux_disabled: false
     flatpaks: []
+    vm_boot: false
+
+  - name: centos-bootc
+    image: quay.io/centos-bootc/centos-bootc:c10s
+    filesystem: xfs
+    composefs_backend: false
+    unified_storage: false
+    selinux_disabled: false
+    flatpaks: []
+    vm_boot: true  # ostree backend verification
+    required: true # ostree + grub2 canary
+    build_ssh_image: true
 
   - name: yellowfin-gnome50
     image: ghcr.io/tuna-os/yellowfin:gnome50
@@ -18,6 +54,7 @@ images:
     selinux_disabled: true
     flatpaks:
       - org.mozilla.firefox
+    vm_boot: false
 
   - name: ubuntu-bootc
     image: ghcr.io/bootcrew/ubuntu-bootc:latest
@@ -26,6 +63,7 @@ images:
     unified_storage: false
     selinux_disabled: false
     flatpaks: []
+    vm_boot: false  # TODO: bootcrew image broken, find or create working ubuntu-bootc image
 
   # gnomeos-bootc disabled: consistently fails with missing blob in containers-storage
   # (sha256:6d2d10...) — likely a broken layer in the ghcr.io/bootcrew/gnomeos-bootc image.
@@ -44,14 +82,69 @@ images:
     unified_storage: false
     selinux_disabled: false
     flatpaks: []
+    vm_boot: false
 
   - name: arch-bootc
     image: ghcr.io/bootcrew/arch-bootc:latest
     filesystem: xfs
     composefs_backend: true
+    bootloader: systemd
     unified_storage: false
     selinux_disabled: false
     flatpaks: []
+    vm_boot: true  # composefs backend verification
+    build_ssh_image: true
+
+  # LUKS variants — vm_boot only (nightly excluded: nightly patches root=/dev/vdaX which is wrong for LUKS)
+  - name: dakota-luks
+    image: ghcr.io/projectbluefin/dakota:latest
+    ssh_image_name: dakota
+    filesystem: ext4
+    composefs_backend: true
+    bootloader: systemd
+    unified_storage: false
+    selinux_disabled: false
+    flatpaks: []
+    luks: true
+    luks_passphrase: "bootcrew-luks-test"
+    vm_timeout: 800
+    nightly: false
+    vm_boot: true
+
+  - name: arch-bootc-luks-xfs
+    image: ghcr.io/bootcrew/arch-bootc:latest
+    ssh_image_name: arch-bootc
+    filesystem: xfs
+    composefs_backend: true
+    bootloader: systemd
+    unified_storage: false
+    selinux_disabled: false
+    flatpaks: []
+    luks: true
+    luks_passphrase: "bootcrew-luks-test"
+    vm_timeout: 800
+    nightly: false
+    vm_boot: true
+
+  # Regression test for issue #38: composefs + btrfs + LUKS.
+  # The original bug occurred when scratch was on btrfs (live-ISO path, space-constrained /var).
+  # This entry tests btrfs+LUKS+composefs in CI (scratch is /var/fisherman-tmp on the runner, not
+  # btrfs, so does not reproduce the exact scratch-on-btrfs failure mode — but validates the
+  # LUKS+composefs install path against a btrfs target filesystem end-to-end).
+  - name: dakota-luks-btrfs
+    image: ghcr.io/projectbluefin/dakota:latest
+    ssh_image_name: dakota
+    filesystem: btrfs
+    composefs_backend: true
+    bootloader: systemd
+    unified_storage: false
+    selinux_disabled: false
+    flatpaks: []
+    luks: true
+    luks_passphrase: "bootcrew-luks-test"
+    vm_timeout: 800
+    nightly: false
+    vm_boot: true
 
   # gentoo-bootc disabled: consistently fails with missing blob in containers-storage
   # (sha256:2443e8...) — likely a broken layer in the ghcr.io/bootcrew/gentoo-bootc image.
@@ -67,9 +160,12 @@ images:
     image: ghcr.io/bootcrew/debian-bootc:latest
     filesystem: xfs
     composefs_backend: true
+    bootloader: systemd
     unified_storage: false
     selinux_disabled: false
     flatpaks: []
+    vm_boot: true  # composefs backend verification (using pre-built SSH image)
+    build_ssh_image: true
 
   - name: frostyard-snow
     image: ghcr.io/frostyard/snow:latest
@@ -78,6 +174,7 @@ images:
     unified_storage: false
     selinux_disabled: false
     flatpaks: []
+    vm_boot: false
 
   # frostyard-snowloaded disabled: image bundles an older libostree built without
   # composefs support, but the Ubuntu 24.04 runner has the composefs kernel module

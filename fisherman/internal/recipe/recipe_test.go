@@ -117,9 +117,8 @@ func TestValidate(t *testing.T) {
 			wantErr: `filesystem must be`,
 		},
 		{
-			name:    "unsupported filesystem ext4",
-			r:       recipe.Recipe{Disk: diskPath, Filesystem: "ext4", Hostname: "h"},
-			wantErr: `filesystem must be`,
+			name: "ext4 filesystem valid",
+			r:    recipe.Recipe{Disk: diskPath, Filesystem: "ext4", Hostname: "h"},
 		},
 		{
 			name:    "btrfsSubvolumes without btrfs",
@@ -238,6 +237,35 @@ func TestLoad(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "reading recipe") {
 			t.Errorf("error = %q, want containing 'reading recipe'", err.Error())
+		}
+	})
+
+	t.Run("additional image stores + mount overrides round-trip", func(t *testing.T) {
+		body := []byte(`{
+            "disk": "/dev/sda",
+            "filesystem": "xfs",
+            "hostname": "h",
+            "additionalImageStores": ["/var/lib/superiso-store", "/srv/extra"],
+            "targetMount": "/mnt/altroot",
+            "luksMapperName": "altmapper"
+        }`)
+		path := filepath.Join(dir, "stores.json")
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := recipe.Load(path)
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if got := loaded.AdditionalImageStores; len(got) != 2 ||
+			got[0] != "/var/lib/superiso-store" || got[1] != "/srv/extra" {
+			t.Errorf("AdditionalImageStores = %v, want [/var/lib/superiso-store /srv/extra]", got)
+		}
+		if loaded.TargetMount != "/mnt/altroot" {
+			t.Errorf("TargetMount = %q, want /mnt/altroot", loaded.TargetMount)
+		}
+		if loaded.LuksMapperName != "altmapper" {
+			t.Errorf("LuksMapperName = %q, want altmapper", loaded.LuksMapperName)
 		}
 	})
 
