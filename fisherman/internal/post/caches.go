@@ -109,6 +109,8 @@ func warmFlatpakAppstream(flatpakDir string) error {
 		if err := os.MkdirAll(targetAppstream, 0755); err == nil {
 			if cpErr := runner.Run("cp", "-a", liveSrc+"/.", targetAppstream); cpErr == nil {
 				progress.Info("Copied Flatpak appstream metadata to installed system")
+				// Write the stamp so the first-boot service skips the network refresh.
+				_ = os.WriteFile(filepath.Join(flatpakDir, ".appstream-refreshed"), []byte("installed\n"), 0o644)
 				return nil
 			}
 		}
