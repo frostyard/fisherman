@@ -65,6 +65,13 @@ func WarmCaches(targetRoot string) {
 	}
 
 	progress.Info(fmt.Sprintf("Pre-warmed %d/%d system caches for instant first boot", warmed, len(caches)))
+
+	// Install a first-boot systemd service that refreshes Flatpak appstream
+	// metadata properly in the booted system context. This is the reliable
+	// fallback for the best-effort live-session refresh above.
+	if err := installFlatpakAppstreamFirstBootService(targetRoot); err != nil {
+		progress.Info(fmt.Sprintf("Warning: could not install Flatpak appstream first-boot service: %v", err))
+	}
 }
 
 // warmFlatpakAppstream refreshes Flatpak remote metadata and copies it to the
@@ -238,4 +245,72 @@ func warmManDB(target string) error {
 // nowUnix returns the current unix timestamp.
 var nowUnix = func() int64 {
 	return time.Now().Unix()
+}
+
+// installFlatpakAppstreamFirstBootService writes a systemd one-shot service
+// unit to the installed target that refreshes Flatpak remote metadata on first
+// boot. This is the reliable complement to the best-effort live-session refresh
+// in warmFlatpakAppstream: even if the installer ran offline or the D-Bus
+// activation was unreliable in the pkexec context, the installed system will
+// sync metadata on its first network-connected boot.
+//
+// A stamp file (/var/lib/flatpak/.appstream-refreshed) prevents re-runs after
+// the first successful refresh, so subsequent boots are unaffected.
+func installFlatpakAppstreamFirstBootService(targetRoot string) error {
+	// Resolve the writable /etc (composefs-native stores it under state/deploy/).
+	var etcDir string
+	if isComposeFsNative(targetRoot) {
+		var err error
+		etcDir, err = ComposeFsDeployEtcDirFn(targetRoot)
+		if err != nil {
+			return fmt.Errorf("finding composefs deploy etc for flatpak service: %w", err)
+		}
+	} else {
+		deployDir, err := DeploymentDirFn(targetRoot)
+		if err != nil {
+			return fmt.Errorf("finding deployment dir for flatpak service: %w", err)
+		}
+		etcDir = filepath.Join(deployDir, "etc")
+	}
+
+	unitDir := filepath.Join(etcDir, "systemd", "system")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", unitDir, err)
+	}
+
+	const unitName = "flatpak-appstream-firstboot.service"
+	const unitContent = `[Unit]
+Description=Refresh Flatpak remote metadata (first boot)
+After=network-online.target flatpak-system-helper.service
+Wants=network-online.target
+ConditionPathExists=!/var/lib/flatpak/.appstream-refreshed
+Documentation=https://docs.projectbluefin.io
+
+[Service]
+Type=oneshot
+ExecStart=flatpak update --appstream --system --noninteractive
+ExecStartPost=/usr/bin/touch /var/lib/flatpak/.appstream-refreshed
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+`
+	unitPath := filepath.Join(unitDir, unitName)
+	if err := os.WriteFile(unitPath, []byte(unitContent), 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", unitPath, err)
+	}
+
+	// Enable the unit by creating a wants-symlink.
+	wantsDir := filepath.Join(unitDir, "multi-user.target.wants")
+	if err := os.MkdirAll(wantsDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", wantsDir, err)
+	}
+	symlink := filepath.Join(wantsDir, unitName)
+	_ = os.Remove(symlink) // remove stale symlink if any
+	if err := os.Symlink("../"+unitName, symlink); err != nil {
+		return fmt.Errorf("enabling %s: %w", unitName, err)
+	}
+
+	progress.Info("Installed flatpak-appstream-firstboot.service (will sync on first network boot)")
+	return nil
 }
