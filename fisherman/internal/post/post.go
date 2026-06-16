@@ -213,14 +213,26 @@ var DeploymentDirFn = DefaultDeploymentDir
 // isComposeFsNative reports whether the installed system at sysroot uses the
 // composefs-native backend.
 //
-// Detection: ostree-based deployments create <sysroot>/ostree/deploy/;
+// Detection: ostree-based deployments create <sysroot>/ostree/deploy/<osname>/;
 // composefs-native (bootc) deployments create <sysroot>/ostree/bootc/ instead.
-// Checking for ostree/deploy/ is the reliable signal — composefs installs have
-// an ostree/ directory (for bootc metadata) but no ostree/deploy/ subtree.
+// bootc also creates an empty ostree/deploy/ directory, so checking
+// for mere existence of ostree/deploy/ is insufficient. We check for
+// at least one subdirectory inside ostree/deploy/ (the OS name directory).
 func isComposeFsNative(sysroot string) bool {
-	// Use ls via runner to check existence, as os.Stat might look in the sandbox.
-	err := runner.Run("ls", filepath.Join(sysroot, "ostree", "deploy"))
-	return err != nil
+	deployDir := filepath.Join(sysroot, "ostree", "deploy")
+	entries, err := os.ReadDir(deployDir)
+	if err != nil {
+		// No ostree/deploy/ at all — definitely composefs.
+		return true
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			// Found an OS name directory inside deploy/ — this is ostree.
+			return false
+		}
+	}
+	// ostree/deploy/ exists but is empty — composefs creates it empty.
+	return true
 }
 
 // IsComposeFsNativeExported is a public wrapper for isComposeFsNative,
