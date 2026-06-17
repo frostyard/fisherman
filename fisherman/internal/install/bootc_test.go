@@ -200,6 +200,19 @@ func TestBuildBootcArgs_OCIPathWithoutComposefs(t *testing.T) {
 	assertAbsent(t, args, "--composefs-backend")
 }
 
+// TestBuildBootcArgs_DirectModeSourceImgref verifies that when SourceImgref
+// is empty (direct/live-ISO mode) but TargetImgref is set, BuildBootcArgs
+// emits --source-imgref with the ostree-unverified-registry transport.
+// Bootc rejects direct installs without an explicit source when not running
+// inside a podman container.
+func TestBuildBootcArgs_DirectModeSourceImgref(t *testing.T) {
+	args := install.BuildBootcArgs(install.Options{
+		SourceImgref: "", // direct mode
+	}, "ghcr.io/ublue-os/bluefin:stable", "/target")
+	assertContains(t, args, "--source-imgref")
+	assertContains(t, args, "ostree-unverified-registry:ghcr.io/ublue-os/bluefin:stable")
+}
+
 func TestBuildBootcArgs_NoComposeFsBackend(t *testing.T) {
 	args := install.BuildBootcArgs(install.Options{ComposeFsBackend: false}, "", "/target")
 	assertAbsent(t, args, "--composefs-backend")

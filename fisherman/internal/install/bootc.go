@@ -159,15 +159,20 @@ func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []
 	if opts.ComposeFsBackend {
 		args = append(args, "--composefs-backend")
 	}
-	// --source-imgref is required for composefs (raw OCI blobs) and
-	// for non-composefs OCI-redirect installs where containers-storage is
-	// not bind-mounted into the container (ostree on target disk).
+	// --source-imgref is required for composefs (raw OCI blobs), for
+	// non-composefs OCI-redirect installs, and for direct mode where bootc
+	// is not running inside a podman container.
+	ociPath := opts.ComposeFsOCIPath
+	if ociPath == "" {
+		ociPath = opts.scratchDir() + "/oci-cache"
+	}
 	if opts.ComposeFsBackend || opts.ComposeFsOCIPath != "" {
-		ociPath := opts.ComposeFsOCIPath
-		if ociPath == "" {
-			ociPath = opts.scratchDir() + "/oci-cache"
-		}
 		args = append(args, "--source-imgref", "oci:"+ociPath)
+	} else if resolvedTargetImgref != "" && opts.SourceImgref == "" {
+		// Direct mode: bootc runs natively (not in a container) and needs
+		// an explicit --source-imgref.  Use the target-imgref as the source
+		// — bootc reads from the local ostree deployment when the ref matches.
+		args = append(args, "--source-imgref", "ostree-unverified-registry:"+bareImageRef(resolvedTargetImgref))
 	}
 	if opts.Bootloader != "" && opts.Bootloader != "grub2" {
 		args = append(args, "--bootloader", opts.Bootloader)
