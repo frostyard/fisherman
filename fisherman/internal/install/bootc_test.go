@@ -210,7 +210,7 @@ func TestBuildBootcArgs_DirectModeSourceImgref(t *testing.T) {
 		SourceImgref: "", // direct mode
 	}, "ghcr.io/ublue-os/bluefin:stable", "/target")
 	assertContains(t, args, "--source-imgref")
-	assertContains(t, args, "ostree-unverified-registry:ghcr.io/ublue-os/bluefin:stable")
+	assertContains(t, args, "docker://ghcr.io/ublue-os/bluefin:stable")
 }
 
 func TestBuildBootcArgs_NoComposeFsBackend(t *testing.T) {

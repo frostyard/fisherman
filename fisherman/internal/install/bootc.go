@@ -170,9 +170,10 @@ func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []
 		args = append(args, "--source-imgref", "oci:"+ociPath)
 	} else if resolvedTargetImgref != "" && opts.SourceImgref == "" {
 		// Direct mode: bootc runs natively (not in a container) and needs
-		// an explicit --source-imgref.  Use the target-imgref as the source
-		// — bootc reads from the local ostree deployment when the ref matches.
-		args = append(args, "--source-imgref", "ostree-unverified-registry:"+bareImageRef(resolvedTargetImgref))
+		// an explicit --source-imgref.  Use the bare registry URL — bootc
+		// resolves it from the local ostree deployment when the ref matches
+		// the running system.
+		args = append(args, "--source-imgref", "docker://"+bareImageRef(resolvedTargetImgref))
 	}
 	if opts.Bootloader != "" && opts.Bootloader != "grub2" {
 		args = append(args, "--bootloader", opts.Bootloader)
