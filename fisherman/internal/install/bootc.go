@@ -158,9 +158,11 @@ func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []
 	// UnifiedStorage is intentionally not emitted — see Options.UnifiedStorage comment.
 	if opts.ComposeFsBackend {
 		args = append(args, "--composefs-backend")
-		// composefs-backend requires raw OCI blobs. The source path differs
-		// between container mode (opts.ComposeFsOCIPath, a bind-mount inside
-		// the container) and direct mode (host-side scratchDir/oci-cache).
+	}
+	// --source-imgref is required for composefs (raw OCI blobs) and
+	// for non-composefs OCI-redirect installs where containers-storage is
+	// not bind-mounted into the container (ostree on target disk).
+	if opts.ComposeFsBackend || opts.ComposeFsOCIPath != "" {
 		ociPath := opts.ComposeFsOCIPath
 		if ociPath == "" {
 			ociPath = opts.scratchDir() + "/oci-cache"
@@ -350,10 +352,14 @@ func bootcViaContainer(opts Options) error {
 			}
 			opts.NeedsPull = true // re-pull into the redirected root
 		} else {
-			// scratch filesystem doesn't support overlay — keep default VFS and hope swap is enough.
 			progress.Substep(fmt.Sprintf("Target-disk overlay unavailable (%s); using host VFS storage", reason))
 		}
 	}
+
+	// Whether we use OCI layout (instead of containers-storage) for the image
+	// source.  Composefs always uses it; non-composefs uses it when redirecting
+	// to target disk so we can skip the containers-storage bind mount.
+	useOciLayout := opts.ComposeFsBackend || nonComposefsRoot != ""
 
 	if opts.NeedsPull {
 		if err := pullImage(opts.SourceImgref, opts.LayerCount, nonComposefsRoot, nonComposefsDriver); err != nil {
@@ -363,44 +369,40 @@ func bootcViaContainer(opts Options) error {
 		progress.Substep("Image already up to date, skipping pull")
 	}
 
-	// For composefs, set the container-side OCI path so BuildBootcArgs emits
-	// the correct --source-imgref pointing inside the container.
+	// Export image to OCI layout when needed.  Composefs requires raw OCI
+	// blobs; non-composefs OCI-redirect uses it so we can skip the
+	// containers-storage bind mount (the major source of podman memory
+	// pressure).
+	if useOciLayout {
+		if err := exportComposefsOCIIfNeeded(opts, opts.SourceImgref); err != nil {
+			return err
+		}
+	}
+
 	containerOpts := opts
-	if opts.ComposeFsBackend {
+	if useOciLayout {
 		containerOpts.ComposeFsOCIPath = containerOCICachePath
 	}
 	bootcArgs := BuildBootcArgs(containerOpts, targetImgref, "/target")
 
-	// composefs-backend requires raw OCI blobs that podman pull doesn't
-	// preserve in containers-storage. Export to an OCI layout first, then
-	// pass --source-imgref oci:<containerOCICachePath> (BuildBootcArgs adds
-	// this flag when ComposeFsBackend is true).
-	// Note: SkopeoExportOCIFn emits its own progress substeps; don't duplicate them here.
-	if err := exportComposefsOCIIfNeeded(opts, opts.SourceImgref); err != nil {
-		return err
-	}
-
-	// For composefs installs the image is already exported as an OCI layout
-	// in the scratch dir. Use that directly as the podman image source and
-	// redirect podman's container storage root to scratch so that the working
-	// container layers (VFS copy of all image files, ~image size) are written
-	// to the target disk rather than to the host's /var/lib/containers —
-	// which may be on a space-constrained filesystem (e.g. the live ISO's
-	// overlayfs with only ~1.4 GiB available).
+	// Build the podman run invocation.
 	var podmanArgs []string
 	podmanImageRef := opts.SourceImgref
-	if opts.ComposeFsBackend {
-		ociCacheHost := filepath.Join(scratch, "oci-cache")
-		containersRoot := filepath.Join(scratch, "containers-root")
-		podmanImageRef = "oci:" + ociCacheHost
-		// --root redirects all podman container storage for this invocation.
-		// Select storage driver based on scratch filesystem safety and podman probe.
-		storageDriver, driverReason := selectStorageDriver(scratch)
-		progress.Substep(fmt.Sprintf("Using %s storage driver (%s)", storageDriver, driverReason))
 
-		// Clear any previous podman database to avoid "database graph driver mismatch" errors
-		// when switching storage drivers. This is necessary when a previous invocation used
-		// a different driver (e.g., vfs) and the new invocation wants overlay.
+	if useOciLayout {
+		ociCacheHost := filepath.Join(scratch, "oci-cache")
+		podmanImageRef = "oci:" + ociCacheHost
+
+		var containersRoot, storageDriver string
+		if opts.ComposeFsBackend {
+			containersRoot = filepath.Join(scratch, "containers-root")
+			storageDriver, _ = selectStorageDriver(scratch)
+		} else {
+			containersRoot = nonComposefsRoot
+			storageDriver = nonComposefsDriver
+		}
+
+		progress.Substep(fmt.Sprintf("Using %s storage driver with OCI layout", storageDriver))
 		if err := os.RemoveAll(containersRoot); err != nil && !os.IsNotExist(err) {
 			progress.Substep(fmt.Sprintf("Warning: could not clear previous podman database: %v", err))
 		}
@@ -420,57 +422,30 @@ func bootcViaContainer(opts Options) error {
 		"run", "--rm",
 		"--privileged",
 		"--pid=host",
-		// label=disable fully disables SELinux labeling for this container,
-		// allowing bootc to write security.selinux xattrs to the target
-		// filesystem without the host SELinux policy interfering.
 		"--security-opt", "label=disable",
 		"-v", "/dev:/dev",
 		"-v", "/sys:/sys",
 	)
 
-	// Bind-mount the host EFI variable store so efibootmgr (called by bootc
-	// during bootloader installation) can write UEFI boot entries into the
-	// firmware. Without this, efibootmgr exits silently with no entries
-	// written and the system only boots via the El-Torito fallback path.
-	// Only mounted when the path exists — non-UEFI hosts have no efivars.
 	if _, err := os.Stat("/sys/firmware/efi/efivars"); err == nil {
 		podmanArgs = append(podmanArgs, "-v", "/sys/firmware/efi/efivars:/sys/firmware/efi/efivars")
 	}
 
-	// For composefs installs, mount the OCI cache at containerOCICachePath
-	// (/run/fisherman/oci-cache) inside the container. Using a dedicated path
-	// under /run avoids any interaction with /var/tmp (which may be a tmpfs or
-	// have different mount propagation on btrfs-on-LUKS targets). The --tmpfs
-	// /var/tmp is retained to give bootc a clean ephemeral directory for its own
-	// temporary files without requiring a large host-backed mount.
-	// See: https://github.com/tuna-os/fisherman/issues/38
-	if opts.ComposeFsBackend {
+	if useOciLayout {
 		ociCacheHost := filepath.Join(scratch, "oci-cache")
 		podmanArgs = append(podmanArgs, "--tmpfs", "/var/tmp")
 		podmanArgs = append(podmanArgs,
 			"-v", ociCacheHost+":"+containerOCICachePath+":ro")
 	} else {
-		// Non-composefs: mount entire scratch for containers-storage temporary files
 		podmanArgs = append(podmanArgs, "-v", scratch+":/var/tmp:z")
 	}
 
 	podmanArgs = append(podmanArgs,
-		// Use shared propagation so submounts (e.g. /boot/efi) created on the host
-		// before launching the container are visible inside it at /target.
 		"--mount", fmt.Sprintf("type=bind,src=%s,dst=/target,bind-propagation=rslave", opts.Target),
 	)
 
-	if NeedsContainerStorageMount(opts) {
-		// Give bootc access to its own image layers in containers-storage.
-		// Skipped for composefs (uses OCI layout) and unified storage (bootc
-		// finds the image via /proc/self/fd/3 — the container's own storage
-		// context — and mounting /var/lib/containers would shadow it).
+	if NeedsContainerStorageMount(opts) && !useOciLayout {
 		podmanArgs = append(podmanArgs, "-v", "/var/lib/containers:/var/lib/containers")
-
-		// Additional image stores (e.g. an offline OCI squashfs baked into a
-		// live ISO). bootc's own storage.conf only lists
-		// /usr/lib/containers/storage; without merging in extra stores the
-		// image reference never resolves even when the data is present.
 		var cleanupConf func()
 		podmanArgs, cleanupConf = appendImageStoreArgs(podmanArgs, scratch, opts)
 		defer cleanupConf()
