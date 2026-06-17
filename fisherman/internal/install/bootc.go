@@ -310,11 +310,15 @@ func BootcInstall(opts Options) error {
 }
 
 func exportComposefsOCIIfNeeded(opts Options, sourceImgref string) error {
-	if !opts.ComposeFsBackend {
+	// Composefs always requires OCI layout for raw blobs.
+	// Non-composefs only needs it in container mode with overlay redirect.
+	// In direct mode (bootcDirect) for non-composefs, bootc reads from
+	// containers-storage on the host — no OCI export needed.
+	if !opts.ComposeFsBackend && opts.SourceImgref == "" {
 		return nil
 	}
 	if sourceImgref == "" {
-		return fmt.Errorf("composefs install requires a source image reference")
+		return fmt.Errorf("OCI layout export requires a source image reference")
 	}
 
 	ociDir := filepath.Join(opts.scratchDir(), "oci-cache")
