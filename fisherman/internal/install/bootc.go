@@ -335,6 +335,10 @@ func bootcViaContainer(opts Options) error {
 	if targetImgref == "" {
 		targetImgref = opts.SourceImgref
 	}
+	// Strip transport prefixes (containers-storage:, docker://, etc.) from
+	// the target-imgref so the installed system tracks a clean registry URL
+	// for day-2 bootc updates.
+	targetImgref = bareImageRef(targetImgref)
 
 	scratch := opts.scratchDir()
 
@@ -441,7 +445,14 @@ func bootcViaContainer(opts Options) error {
 
 	if useOciLayout {
 		ociCacheHost := filepath.Join(scratch, "oci-cache")
-		podmanArgs = append(podmanArgs, "--tmpfs", "/var/tmp")
+		// Non-composefs (ostree) installs: bootc needs disk-backed /var/tmp
+		// for deployment scratch.  tmpfs would consume VM RAM and OOM-kill.
+		// Composefs uses tmpfs because the OCI cache is at a dedicated mount.
+		if !opts.ComposeFsBackend {
+			podmanArgs = append(podmanArgs, "-v", scratch+":/var/tmp:z")
+		} else {
+			podmanArgs = append(podmanArgs, "--tmpfs", "/var/tmp")
+		}
 		podmanArgs = append(podmanArgs,
 			"-v", ociCacheHost+":"+containerOCICachePath+":ro")
 	} else {
