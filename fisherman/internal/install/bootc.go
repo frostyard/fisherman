@@ -170,14 +170,10 @@ func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []
 		args = append(args, "--source-imgref", "oci:"+ociPath)
 	} else if resolvedTargetImgref != "" && opts.SourceImgref == "" {
 		// Direct mode: bootc runs natively (not in a container) and needs
-		// an explicit --source-imgref.  Use docker:// transport — the live
-		// ISO VM has NAT networking via QEMU -netdev user, so registry
-		// pulls work in CI.  containers-storage: would be preferable for
-		// offline use but the squashed image in the ISO loses ostree
-		// annotations that bootc requires for --source-imgref (the podman
-		// on Ubuntu 24.04 doesn't support --annotation or
-		// set-annotation).
-		args = append(args, "--source-imgref", "docker://"+bareImageRef(resolvedTargetImgref))
+		// an explicit --source-imgref.  Use containers-storage transport
+		// to read the image from local storage (embedded in the live ISO
+		// at /usr/lib/containers/storage).  No network pull needed.
+		args = append(args, "--source-imgref", "containers-storage:"+bareImageRef(resolvedTargetImgref))
 	}
 	if opts.Bootloader != "" && opts.Bootloader != "grub2" {
 		args = append(args, "--bootloader", opts.Bootloader)
