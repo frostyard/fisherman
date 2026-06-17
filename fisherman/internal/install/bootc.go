@@ -354,7 +354,11 @@ func bootcViaContainer(opts Options) error {
 			if err := os.RemoveAll(nonComposefsRoot); err != nil && !os.IsNotExist(err) {
 				progress.Substep(fmt.Sprintf("Warning: could not clear previous podman database: %v", err))
 			}
-			opts.NeedsPull = true // re-pull into the redirected root
+			// Only re-pull when the source is a registry URL.  containers-storage:
+			// images are already local; they get exported to OCI layout instead.
+			if !strings.HasPrefix(opts.SourceImgref, "containers-storage:") {
+				opts.NeedsPull = true
+			}
 		} else {
 			progress.Substep(fmt.Sprintf("Target-disk overlay unavailable (%s); using host VFS storage", reason))
 		}
