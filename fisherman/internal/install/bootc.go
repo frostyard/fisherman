@@ -166,6 +166,11 @@ func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []
 			ociPath = opts.scratchDir() + "/oci-cache"
 		}
 		args = append(args, "--source-imgref", "oci:"+ociPath)
+	} else if resolvedTargetImgref != "" && opts.SourceImgref == "" {
+		// Direct mode: bootc runs natively (not in a container) and needs
+		// an explicit --source-imgref.  Use containers-storage transport
+		// to read the image from local storage (no network pull needed).
+		args = append(args, "--source-imgref", "containers-storage:"+bareImageRef(resolvedTargetImgref))
 	}
 	if opts.Bootloader != "" && opts.Bootloader != "grub2" {
 		args = append(args, "--bootloader", opts.Bootloader)
@@ -325,6 +330,10 @@ func bootcViaContainer(opts Options) error {
 	if targetImgref == "" {
 		targetImgref = opts.SourceImgref
 	}
+	// Strip transport prefixes (containers-storage:, docker://, etc.) from
+	// the target-imgref so the installed system tracks a clean registry URL
+	// for day-2 bootc updates.
+	targetImgref = bareImageRef(targetImgref)
 
 	if opts.NeedsPull {
 		if err := pullImage(opts.SourceImgref, opts.LayerCount); err != nil {
