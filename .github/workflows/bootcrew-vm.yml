@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   lint:
-    runs-on: ubuntu-24.04
+    runs-on: ghost-runners
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +37,7 @@ jobs:
           args: --config=${{ github.workspace }}/.golangci.yml --timeout=5m
 
   setup:
-    runs-on: ubuntu-24.04
+    runs-on: ghost-runners
     timeout-minutes: 5
     outputs:
       matrix_required: ${{ steps.read-matrix.outputs.matrix_required }}
@@ -62,7 +62,7 @@ jobs:
           cat "$GITHUB_OUTPUT"
 
   unit-tests:
-    runs-on: ubuntu-24.04
+    runs-on: ghost-runners
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -93,7 +93,7 @@ jobs:
   vm-boot-required:
     name: required / ${{ matrix.image.name }}
     needs: [setup, unit-tests, lint]
-    runs-on: ubuntu-24.04
+    runs-on: ghost-runners
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -155,7 +155,7 @@ jobs:
     name: required-canaries
     if: always()
     needs: [lint, unit-tests, vm-boot-required]
-    runs-on: ubuntu-24.04
+    runs-on: ghost-runners
     timeout-minutes: 1
     steps:
       - name: Verify required jobs succeeded
@@ -181,7 +181,7 @@ jobs:
     name: advisory / ${{ matrix.image.name }}
     needs: [setup, unit-tests, lint]
     if: ${{ needs.setup.outputs.matrix_advisory != '[]' }}
-    runs-on: ubuntu-24.04
+    runs-on: ghost-runners
     timeout-minutes: 30
     continue-on-error: true
     strategy:
