@@ -583,8 +583,8 @@ func TestEnablePrintServices(t *testing.T) {
 	t.Run("ostree", func(t *testing.T) {
 		dir := t.TempDir()
 
-		// Create /ostree/ dir so isComposeFsNative returns false.
-		if err := os.MkdirAll(filepath.Join(dir, "ostree"), 0o755); err != nil {
+		// Create /ostree/deploy/default dir so isComposeFsNative returns false.
+		if err := os.MkdirAll(filepath.Join(dir, "ostree", "deploy", "default"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 
