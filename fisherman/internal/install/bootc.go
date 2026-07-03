@@ -126,6 +126,13 @@ type Options struct {
 	// When empty, BuildBootcArgs falls back to the host-side OCI cache
 	// (scratchDir/oci-cache), which is correct for bootcDirect (no container).
 	ComposeFsOCIPath string
+	// CosignKeyPath is a path to a cosign public key. When set and the
+	// source is a registry reference, the tag is resolved to a digest, the
+	// digest reference is verified with `cosign verify --key`, and the
+	// install proceeds from that pinned digest. Verification failure aborts
+	// the install. Local sources (containers-storage:, oci:, ...) skip
+	// verification — their provenance was established at media build time.
+	CosignKeyPath string
 }
 
 // scratchDir returns the host-side scratch directory from opts, falling back
@@ -345,6 +352,20 @@ func bootcViaContainer(opts Options) error {
 	// the target-imgref so the installed system tracks a clean registry URL
 	// for day-2 bootc updates.
 	targetImgref = bareImageRef(targetImgref)
+
+	// Verify the image signature and pin the source to the verified digest.
+	// This happens after targetImgref is resolved so the installed system
+	// still tracks the tag (not the digest) for day-2 updates.
+	if opts.CosignKeyPath != "" {
+		pinned, err := VerifyAndPinImage(opts.SourceImgref, opts.CosignKeyPath)
+		if err != nil {
+			return fmt.Errorf("verifying image signature: %w", err)
+		}
+		if pinned != opts.SourceImgref {
+			progress.Substep("Image signature verified (cosign)")
+			opts.SourceImgref = pinned
+		}
+	}
 
 	scratch := opts.scratchDir()
 

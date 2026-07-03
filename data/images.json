@@ -871,6 +871,41 @@
                     "needs_user_creation": false,
                     "tag": "latest",
                     "default_hostname": "snow",
+                    "flatpak_var_path": "state/os/default/var",
+                    "filesystems": [
+                        "btrfs",
+                        "ext4"
+                    ]
+                },
+                {
+                    "name": "Snow Loaded",
+                    "desc": "Snow with Edge, VSCode, Bitwarden, Incus and Entra SSO preloaded",
+                    "search_extra": "debian debian-bootc composefs systemd-boot loaded",
+                    "registry": "ghcr.io/frostyard/snowloaded",
+                    "bootloader": "systemd",
+                    "filesystem": "btrfs",
+                    "composefs": true,
+                    "needs_user_creation": false,
+                    "tag": "latest",
+                    "default_hostname": "snow",
+                    "flatpak_var_path": "state/os/default/var",
+                    "filesystems": [
+                        "btrfs",
+                        "ext4"
+                    ]
+                },
+                {
+                    "name": "Snowfield",
+                    "desc": "Snow with the linux-surface kernel for Surface devices",
+                    "search_extra": "debian debian-bootc composefs systemd-boot surface",
+                    "registry": "ghcr.io/frostyard/snowfield",
+                    "bootloader": "systemd",
+                    "filesystem": "btrfs",
+                    "composefs": true,
+                    "needs_user_creation": false,
+                    "tag": "latest",
+                    "default_hostname": "snowfield",
+                    "flatpak_var_path": "state/os/default/var",
                     "filesystems": [
                         "btrfs",
                         "ext4"
