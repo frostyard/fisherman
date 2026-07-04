@@ -395,13 +395,34 @@ func bootcViaContainer(opts Options) error {
 		}
 	}
 
+	// Composefs: the podman-run stage below already uses a scratch-rooted
+	// store, but the PULL historically used the default /var/lib/containers —
+	// on live media a size-constrained overlay that cannot hold the extracted
+	// layers (ENOSPC at the last layer). Pull into the scratch-rooted store
+	// and export from it via a containers-storage store specification.
+	var composefsRoot, composefsDriver string
+	if opts.ComposeFsBackend {
+		composefsRoot = filepath.Join(scratch, "containers-root")
+		composefsDriver, _ = selectStorageDriver(scratch)
+		if err := os.RemoveAll(composefsRoot); err != nil && !os.IsNotExist(err) {
+			progress.Substep(fmt.Sprintf("Warning: could not clear previous podman database: %v", err))
+		}
+		if !strings.HasPrefix(opts.SourceImgref, "containers-storage:") {
+			opts.NeedsPull = true
+		}
+	}
+
 	// Whether we use OCI layout (instead of containers-storage) for the image
 	// source.  Composefs always uses it; non-composefs uses it when redirecting
 	// to target disk so we can skip the containers-storage bind mount.
 	useOciLayout := opts.ComposeFsBackend || nonComposefsRoot != ""
 
+	pullRoot, pullDriver := nonComposefsRoot, nonComposefsDriver
+	if opts.ComposeFsBackend {
+		pullRoot, pullDriver = composefsRoot, composefsDriver
+	}
 	if opts.NeedsPull {
-		if err := pullImage(opts.SourceImgref, opts.LayerCount, nonComposefsRoot, nonComposefsDriver); err != nil {
+		if err := pullImage(opts.SourceImgref, opts.LayerCount, pullRoot, pullDriver); err != nil {
 			return fmt.Errorf("pulling image: %w", err)
 		}
 	} else {
@@ -412,9 +433,26 @@ func bootcViaContainer(opts Options) error {
 	// blobs; non-composefs OCI-redirect uses it so we can skip the
 	// containers-storage bind mount (the major source of podman memory
 	// pressure).
+	exportRef := opts.SourceImgref
+	if opts.ComposeFsBackend && composefsRoot != "" && !strings.HasPrefix(exportRef, "containers-storage:") {
+		// Read from the scratch-rooted store the pull populated.
+		exportRef = fmt.Sprintf("containers-storage:[%s@%s+%s]%s",
+			composefsDriver, composefsRoot, filepath.Join(composefsRoot, "runroot"),
+			bareImageRef(opts.SourceImgref))
+	}
 	if useOciLayout {
-		if err := exportComposefsOCIIfNeeded(opts, opts.SourceImgref); err != nil {
+		if err := exportComposefsOCIIfNeeded(opts, exportRef); err != nil {
 			return err
+		}
+	}
+
+	// The OCI layout is self-contained: drop the pulled store so the target
+	// disk (which hosts the scratch dir on live media) has room for the
+	// actual deployment. The podman-run stage recreates its store from the
+	// OCI layout.
+	if opts.ComposeFsBackend && composefsRoot != "" {
+		if err := os.RemoveAll(composefsRoot); err != nil {
+			progress.Substep(fmt.Sprintf("Warning: could not remove transfer store: %v", err))
 		}
 	}
 
