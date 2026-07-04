@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tuna-os/fisherman/internal/progress"
+	"github.com/tuna-os/fisherman/internal/runner"
 )
 
 // WarmCaches pre-generates system caches inside the installed target so that
@@ -64,10 +65,24 @@ func WarmCaches(targetRoot string) {
 	}
 
 	progress.Info(fmt.Sprintf("Pre-warmed %d/%d system caches for instant first boot", warmed, len(caches)))
+	// flatpak-appstream-firstboot.service is shipped by the OS image (common repo)
+	// and enabled via system-preset. The stamp file written by warmFlatpakAppstream
+	// above will prevent it from running redundantly on installs that had internet.
 }
 
-// warmFlatpakAppstream touches the appstream .timestamp so gnome-software
-// doesn't trigger a full remote refresh on first boot.
+// warmFlatpakAppstream refreshes Flatpak remote metadata and copies it to the
+// installed system so GNOME Software opens instantly on first boot without
+// triggering a full network sync.
+//
+// Strategy:
+//  1. Run `flatpak update --appstream --system` in the live session to fetch
+//     the latest metadata from Flathub and other remotes (requires internet;
+//     non-fatal if offline).
+//  2. Copy the live system's /var/lib/flatpak/appstream/ into the target so
+//     the installed system has up-to-date metadata.
+//  3. Fall back to touching the .timestamp file so gnome-software at least
+//     doesn't trigger a redundant refresh when appstream data is present.
+//
 // flatpakDir is the actual flatpak root directory, e.g.:
 //   - ostree:           $TARGET/var/lib/flatpak
 //   - composefs-native: $TARGET/state/os/default/var/lib/flatpak
@@ -76,19 +91,31 @@ func warmFlatpakAppstream(flatpakDir string) error {
 		return nil // no flatpaks installed, nothing to cache
 	}
 
-	// flatpak update --appstream requires the system to be booted,
-	// but we can run flatpak build-update-repo on the local repo
-	// to regenerate appstream data. The simpler approach: just ensure
-	// the appstream/ directories exist so gnome-software doesn't
-	// trigger a full remote refresh on first boot.
-	//
-	// The actual appstream data was already populated when we copied
-	// system flatpaks in step 7. Mark it as fresh.
-	appstreamDir := filepath.Join(flatpakDir, "appstream")
-	if _, err := os.Stat(appstreamDir); err == nil {
-		// Touch the timestamp file so gnome-software thinks it's current
-		tsFile := filepath.Join(appstreamDir, ".timestamp")
-		return os.WriteFile(tsFile, []byte(fmt.Sprintf("%d", nowUnix())), 0644)
+	// Step 1: refresh appstream in the live session (best-effort, internet required).
+	progress.Info("Refreshing Flatpak remote metadata (requires internet)…")
+	_ = runner.Run("flatpak", "update", "--appstream", "--system", "--noninteractive")
+
+	// Step 2: copy the live system's appstream directory to the target so
+	// the installed system inherits whatever was just downloaded (or what was
+	// baked into the live squashfs at ISO build time).
+	liveSrc := "/var/lib/flatpak/appstream"
+	targetAppstream := filepath.Join(flatpakDir, "appstream")
+	if info, err := os.Stat(liveSrc); err == nil && info.IsDir() {
+		// Merge live appstream into target (overwrite per-remote subdirs).
+		if err := os.MkdirAll(targetAppstream, 0755); err == nil {
+			if cpErr := runner.Run("cp", "-a", liveSrc+"/.", targetAppstream); cpErr == nil {
+				progress.Info("Copied Flatpak appstream metadata to installed system")
+				// Write the stamp so the first-boot service skips the network refresh.
+				_ = os.WriteFile(filepath.Join(flatpakDir, ".appstream-refreshed"), []byte("installed\n"), 0o644)
+				return nil
+			}
+		}
+	}
+
+	// Step 3: fallback — touch .timestamp so gnome-software skips auto-refresh.
+	if _, err := os.Stat(targetAppstream); err == nil {
+		tsFile := filepath.Join(targetAppstream, ".timestamp")
+		_ = os.WriteFile(tsFile, []byte(fmt.Sprintf("%d", nowUnix())), 0644)
 	}
 	return nil
 }

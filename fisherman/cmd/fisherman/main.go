@@ -651,6 +651,7 @@ func main() {
 		SourceImgref:          r.Image,
 		TargetImgref:          targetImgref,
 		SelinuxDisabled:       r.SelinuxDisabled,
+		CosignKeyPath:         r.CosignPubKey,
 		UnifiedStorage:        r.UnifiedStorage,
 		ComposeFsBackend:      composeFsBackend,
 		Bootloader:            r.Bootloader,

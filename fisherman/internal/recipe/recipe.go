@@ -15,7 +15,13 @@ type Recipe struct {
 	Image           string     `json:"image"`        // source OCI image reference
 	TargetImgref    string     `json:"targetImgref"` // update-tracking ref (optional)
 	SelinuxDisabled bool       `json:"selinuxDisabled"`
-	UnifiedStorage  bool       `json:"unifiedStorage"` // pass --experimental-unified-storage
+	// CosignPubKey is a path to a cosign public key. When set and the image
+	// is a registry reference, the tag is resolved to a digest, that digest
+	// ref is verified with `cosign verify --key`, and the install pins the
+	// verified digest. Verification failure aborts the install. Local image
+	// sources (containers-storage:, oci:, ...) skip verification.
+	CosignPubKey   string `json:"cosignPubKey,omitempty"`
+	UnifiedStorage bool   `json:"unifiedStorage"` // pass --experimental-unified-storage
 	// ComposeFsBackend passes --composefs-backend to bootc install to-filesystem.
 	// Required for composefs-native images (e.g. ghcr.io/bootcrew/*).
 	// Independent of UnifiedStorage — these are different bootc features.

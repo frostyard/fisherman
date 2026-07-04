@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tuna-os/fisherman/internal/post"
 	"github.com/tuna-os/fisherman/internal/progress"
 	"github.com/tuna-os/fisherman/internal/runner"
 )
@@ -316,25 +317,67 @@ func InjectWallpapers(target string, slurpResult *WallpaperResult, composeFsNati
 // installed system — both system-provided (/usr/share/backgrounds/) and any
 // user-injected ones. Call this after bootc install + wallpaper injection so
 // the wallpaper capplet opens instantly on first boot.
+//
+// Thumbnails are written to the target's /etc/skel/.cache/thumbnails/large/
+// so that every newly-created user inherits them on first login (useradd/
+// adduser copies /etc/skel/ into the new home directory). This is the only
+// reliable approach when no user exists yet at install time.
+// Thumbnails are also written directly into any existing user home directories.
 func GenerateSystemThumbnails(target string, composeFsNative bool) int {
 	thumbnailer := detectThumbnailer()
 	if thumbnailer == "" {
 		return 0
 	}
 
-	// Determine the user's home and cache paths on the target
+	// Collect candidate thumbnail cache directories:
+	//  1. /etc/skel — propagates to every new user created after install.
+	//  2. Existing user homes in var/home — covers the case where a user was
+	//     created during setup (e.g. via a user-creation installer step).
+	var cacheDirs []string
+
+	// Primary: skel (works even when no user exists yet).
+	// For composefs-native the writable /etc is in state/deploy/<hash>/etc;
+	// fall back to the standard skel path which is read-only but still gets
+	// copied by useradd on the booted system.
+	var etcBase string
+	if composeFsNative {
+		// Best-effort: try to find the writable composefs deploy /etc.
+		if etcDir, err := post.DefaultComposeFsDeployEtcDir(target); err == nil {
+			etcBase = etcDir
+		}
+	}
+	if etcBase == "" {
+		etcBase = filepath.Join(target, "etc")
+	}
+	skelCache := filepath.Join(etcBase, "skel", ".cache", "thumbnails", "large")
+	if err := os.MkdirAll(skelCache, 0o700); err == nil {
+		cacheDirs = append(cacheDirs, skelCache)
+	}
+
+	// Secondary: existing user homes.
 	var homeBase string
 	if composeFsNative {
 		homeBase = filepath.Join(target, "state", "os", "default", "var", "home")
 	} else {
 		homeBase = filepath.Join(target, "var", "home")
 	}
-	cacheDir := filepath.Join(homeBase, ".cache", "thumbnails", "large")
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+	if homeDirEntries, err := os.ReadDir(homeBase); err == nil {
+		for _, e := range homeDirEntries {
+			if !e.IsDir() {
+				continue
+			}
+			userCache := filepath.Join(homeBase, e.Name(), ".cache", "thumbnails", "large")
+			if err := os.MkdirAll(userCache, 0o700); err == nil {
+				cacheDirs = append(cacheDirs, userCache)
+			}
+		}
+	}
+
+	if len(cacheDirs) == 0 {
 		return 0
 	}
 
-	// Directories to scan for wallpapers (on the mounted target filesystem)
+	// Directories to scan for wallpapers (on the mounted target filesystem).
 	scanDirs := []string{
 		filepath.Join(target, "usr", "share", "backgrounds"),
 		filepath.Join(target, "usr", "share", "wallpapers"),
@@ -370,25 +413,34 @@ func GenerateSystemThumbnails(target string, composeFsNative bool) int {
 
 			fileURI := "file://" + installedPath
 			thumbName := md5hex(fileURI) + ".png"
-			thumbPath := filepath.Join(cacheDir, thumbName)
 
-			// Skip if thumbnail already exists
-			if _, err := os.Stat(thumbPath); err == nil {
-				return nil
-			}
-
-			if generateSingleThumbnail(thumbnailer, path, thumbPath) {
-				count++
+			// Write thumbnail to every target cache directory.
+			for _, cacheDir := range cacheDirs {
+				thumbPath := filepath.Join(cacheDir, thumbName)
+				if _, err := os.Stat(thumbPath); err == nil {
+					continue // already exists in this cache dir
+				}
+				if generateSingleThumbnail(thumbnailer, path, thumbPath) {
+					count++
+				}
 			}
 			return nil
 		})
 	}
 
-	// Fix ownership on the entire thumbnail cache
+	// Fix ownership: skel thumbnails owned by root (correct); user home
+	// thumbnails owned by the user (uid 1000).
 	if count > 0 {
-		thumbBase := filepath.Join(homeBase, ".cache", "thumbnails")
-		_ = runner.Run("chown", "-R", "1000:1000", thumbBase)
-		_ = runner.Run("restorecon", "-R", thumbBase)
+		if homeDirEntries, err := os.ReadDir(homeBase); err == nil {
+			for _, e := range homeDirEntries {
+				if !e.IsDir() {
+					continue
+				}
+				thumbBase := filepath.Join(homeBase, e.Name(), ".cache", "thumbnails")
+				_ = runner.Run("chown", "-R", "1000:1000", thumbBase)
+				_ = runner.Run("restorecon", "-R", thumbBase)
+			}
+		}
 	}
 
 	return count

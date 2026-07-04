@@ -583,8 +583,8 @@ func TestEnablePrintServices(t *testing.T) {
 	t.Run("ostree", func(t *testing.T) {
 		dir := t.TempDir()
 
-		// Create /ostree/ dir so isComposeFsNative returns false.
-		if err := os.MkdirAll(filepath.Join(dir, "ostree"), 0o755); err != nil {
+		// Create /ostree/deploy/default dir so isComposeFsNative returns false.
+		if err := os.MkdirAll(filepath.Join(dir, "ostree", "deploy", "default"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 
@@ -642,6 +642,93 @@ func TestDefaultComposeFsDeployEtcDir_BLSEntry(t *testing.T) {
 	}
 	if got != deployEtc {
 		t.Errorf("got %q, want %q", got, deployEtc)
+	}
+}
+
+// TestIsComposeFsNative verifies the composefs detection logic:
+// presence of ostree/deploy/<osname>/ → ostree backend;
+// absence or empty ostree/deploy/ → composefs.
+func TestIsComposeFsNative_ComposeFsLayout(t *testing.T) {
+	// Composefs layout: ostree/bootc/ exists but NOT ostree/deploy/.
+	// WriteHostname must route to the ComposeFsDeployEtcDirFn path.
+	target := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(target, "ostree", "bootc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deployEtc := filepath.Join(target, "state", "deploy", "abc", "etc")
+	if err := os.MkdirAll(deployEtc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := post.ComposeFsDeployEtcDirFn
+	post.ComposeFsDeployEtcDirFn = func(string) (string, error) { return deployEtc, nil }
+	t.Cleanup(func() { post.ComposeFsDeployEtcDirFn = old })
+
+	if err := post.WriteHostname(target, "composehost"); err != nil {
+		t.Fatalf("WriteHostname on composefs layout: %v", err)
+	}
+	// Must write to the composefs deploy etc, NOT $TARGET/etc/.
+	data, err := os.ReadFile(filepath.Join(deployEtc, "hostname"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "composehost\n" {
+		t.Errorf("got %q, want %q", string(data), "composehost\n")
+	}
+}
+
+func TestIsComposeFsNative_EmptyDeployDir(t *testing.T) {
+	// bootc composefs installs create an empty ostree/deploy/ directory.
+	// This MUST be treated as composefs, not ostree — empty deploy/ has no
+	// OS name subdirectory, so the ostree path would fail to find a deployment.
+	target := t.TempDir()
+	// Create ostree/bootc/ (composefs metadata)
+	if err := os.MkdirAll(filepath.Join(target, "ostree", "bootc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create an empty ostree/deploy/ (bootc creates this but leaves it empty)
+	if err := os.MkdirAll(filepath.Join(target, "ostree", "deploy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deployEtc := filepath.Join(target, "state", "deploy", "abc", "etc")
+	if err := os.MkdirAll(deployEtc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := post.ComposeFsDeployEtcDirFn
+	post.ComposeFsDeployEtcDirFn = func(string) (string, error) { return deployEtc, nil }
+	t.Cleanup(func() { post.ComposeFsDeployEtcDirFn = old })
+
+	if err := post.WriteHostname(target, "composefs-with-empty-deploy"); err != nil {
+		t.Fatalf("WriteHostname with empty ostree/deploy/: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(deployEtc, "hostname"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "composefs-with-empty-deploy\n" {
+		t.Errorf("got %q, want %q", string(data), "composefs-with-empty-deploy\n")
+	}
+}
+
+func TestIsComposeFsNative_OstreeLayout(t *testing.T) {
+	// Ostree layout: ostree/deploy/ exists → NOT composefs.
+	target := t.TempDir()
+	fakeDeployDir := filepath.Join(target, "ostree", "deploy", "default", "deploy", "hash.0")
+	if err := os.MkdirAll(fakeDeployDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := post.DeploymentDirFn
+	post.DeploymentDirFn = func(string) (string, error) { return fakeDeployDir, nil }
+	t.Cleanup(func() { post.DeploymentDirFn = old })
+
+	if err := post.WriteHostname(target, "ostreehost"); err != nil {
+		t.Fatalf("WriteHostname on ostree layout: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(fakeDeployDir, "etc", "hostname"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ostreehost\n" {
+		t.Errorf("got %q, want %q", string(data), "ostreehost\n")
 	}
 }
 

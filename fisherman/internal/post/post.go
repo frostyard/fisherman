@@ -211,12 +211,28 @@ func DefaultDeploymentDir(sysroot string) (string, error) {
 var DeploymentDirFn = DefaultDeploymentDir
 
 // isComposeFsNative reports whether the installed system at sysroot uses the
-// composefs-native backend. Composefs-native deployments have no /ostree/
-// directory; ostree-based deployments always create one.
+// composefs-native backend.
+//
+// Detection: ostree-based deployments create <sysroot>/ostree/deploy/<osname>/;
+// composefs-native (bootc) deployments create <sysroot>/ostree/bootc/ instead.
+// bootc also creates an empty ostree/deploy/ directory, so checking
+// for mere existence of ostree/deploy/ is insufficient. We check for
+// at least one subdirectory inside ostree/deploy/ (the OS name directory).
 func isComposeFsNative(sysroot string) bool {
-	// Use ls via runner to check existence, as os.Stat might look in the sandbox.
-	err := runner.Run("ls", filepath.Join(sysroot, "ostree"))
-	return err != nil
+	deployDir := filepath.Join(sysroot, "ostree", "deploy")
+	entries, err := os.ReadDir(deployDir)
+	if err != nil {
+		// No ostree/deploy/ at all — definitely composefs.
+		return true
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			// Found an OS name directory inside deploy/ — this is ostree.
+			return false
+		}
+	}
+	// ostree/deploy/ exists but is empty — composefs creates it empty.
+	return true
 }
 
 // IsComposeFsNativeExported is a public wrapper for isComposeFsNative,
@@ -579,33 +595,66 @@ func CopyBluetoothPairings(target string) error {
 	_ = runner.Run("restorecon", "-R", dst)
 
 	fmt.Fprintf(os.Stdout, "  copied Bluetooth pairings to %s\n", dst)
+
+	// Copy WirePlumber state so Bluetooth audio devices (speakers, headphones)
+	// auto-reconnect on first boot. WirePlumber stores per-device audio policy
+	// (auto-connect, trusted state, volume) in /var/lib/wireplumber/. Without
+	// this, the bluez pairing is present but WirePlumber has no record of the
+	// audio connection profile and won't initiate reconnection.
+	wpSrc := "/var/lib/wireplumber"
+	if info, err := os.Stat(wpSrc); err == nil && info.IsDir() {
+		var wpDst string
+		if isComposeFsNative(target) {
+			wpDst = filepath.Join(target, "state", "os", "default", "var", "lib", "wireplumber")
+		} else {
+			wpDst = filepath.Join(target, "var", "lib", "wireplumber")
+		}
+		if mkErr := runner.Run("mkdir", "-p", wpDst); mkErr == nil {
+			if cpErr := runner.Run("cp", "-a", wpSrc+"/.", wpDst); cpErr == nil {
+				fmt.Fprintf(os.Stdout, "  copied WirePlumber state to %s\n", wpDst)
+			}
+		}
+	}
+
 	return nil
 }
 
 // CopyWiFiConnections copies NetworkManager connection profiles from the live
 // session to the installed system so WiFi connects automatically on first boot.
 // Non-fatal: if no connections exist or the copy fails, the system still boots.
+//
+// Checks both /etc/NetworkManager/system-connections (standard writable path)
+// and /run/NetworkManager/system-connections (used on live ISOs where the base
+// /etc is read-only, e.g. GnomeOS/bootc with composefs).
 func CopyWiFiConnections(target string) error {
-	const src = "/etc/NetworkManager/system-connections"
-	info, err := os.Stat(src)
-	if err != nil || !info.IsDir() {
-		return nil // no NM connections — nothing to do
+	// Collect .nmconnection files from all candidate source directories.
+	srcDirs := []string{
+		"/etc/NetworkManager/system-connections",
+		"/run/NetworkManager/system-connections",
 	}
 
-	entries, err := os.ReadDir(src)
-	if err != nil || len(entries) == 0 {
-		return nil
-	}
-
-	// Only copy .nmconnection files (skip other config).
-	var hasConnections bool
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".nmconnection") {
-			hasConnections = true
-			break
+	var filesToCopy []string
+	seen := map[string]bool{}
+	for _, srcDir := range srcDirs {
+		if info, err := os.Stat(srcDir); err != nil || !info.IsDir() {
+			continue
+		}
+		entries, err := os.ReadDir(srcDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".nmconnection") {
+				continue
+			}
+			if seen[e.Name()] {
+				continue // prefer /etc/ over /run/ if both have the same file
+			}
+			seen[e.Name()] = true
+			filesToCopy = append(filesToCopy, filepath.Join(srcDir, e.Name()))
 		}
 	}
-	if !hasConnections {
+	if len(filesToCopy) == 0 {
 		return nil
 	}
 
@@ -629,21 +678,17 @@ func CopyWiFiConnections(target string) error {
 		return fmt.Errorf("mkdir %s: %w", dst, err)
 	}
 
-	// Copy only .nmconnection files preserving permissions (they contain passwords, mode 0600).
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".nmconnection") {
-			continue
-		}
-		srcFile := filepath.Join(src, e.Name())
+	// Copy preserving permissions (files contain passwords, mode 0600).
+	for _, srcFile := range filesToCopy {
 		if err := runner.Run("cp", "-a", srcFile, dst+"/"); err != nil {
-			return fmt.Errorf("copying %s: %w", e.Name(), err)
+			return fmt.Errorf("copying %s: %w", filepath.Base(srcFile), err)
 		}
 	}
 
 	// Fix SELinux context if restorecon is available.
 	_ = runner.Run("restorecon", "-R", dst)
 
-	fmt.Fprintf(os.Stdout, "  copied WiFi connections to %s\n", dst)
+	fmt.Fprintf(os.Stdout, "  copied %d WiFi connection(s) to %s\n", len(filesToCopy), dst)
 	return nil
 }
 
