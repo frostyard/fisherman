@@ -910,6 +910,57 @@
                         "btrfs",
                         "ext4"
                     ]
+                },
+                {
+                    "name": "Snowfield Loaded",
+                    "desc": "Snowfield with Edge, VSCode, Bitwarden, Incus and Entra SSO preloaded",
+                    "search_extra": "debian debian-bootc composefs systemd-boot surface loaded",
+                    "registry": "ghcr.io/frostyard/snowfieldloaded",
+                    "bootloader": "systemd",
+                    "filesystem": "btrfs",
+                    "composefs": true,
+                    "needs_user_creation": false,
+                    "tag": "latest",
+                    "default_hostname": "snowfield",
+                    "flatpak_var_path": "state/os/default/var",
+                    "filesystems": [
+                        "btrfs",
+                        "ext4"
+                    ]
+                },
+                {
+                    "name": "Cayo",
+                    "desc": "Opinionated Debian bootc server image",
+                    "search_extra": "debian debian-bootc composefs systemd-boot server",
+                    "registry": "ghcr.io/frostyard/cayo",
+                    "bootloader": "systemd",
+                    "filesystem": "btrfs",
+                    "composefs": true,
+                    "needs_user_creation": false,
+                    "tag": "latest",
+                    "default_hostname": "cayo",
+                    "flatpak_var_path": "state/os/default/var",
+                    "filesystems": [
+                        "btrfs",
+                        "ext4"
+                    ]
+                },
+                {
+                    "name": "Cayo Loaded",
+                    "desc": "Cayo with Docker and Incus preloaded",
+                    "search_extra": "debian debian-bootc composefs systemd-boot server loaded docker incus",
+                    "registry": "ghcr.io/frostyard/cayoloaded",
+                    "bootloader": "systemd",
+                    "filesystem": "btrfs",
+                    "composefs": true,
+                    "needs_user_creation": false,
+                    "tag": "latest",
+                    "default_hostname": "cayo",
+                    "flatpak_var_path": "state/os/default/var",
+                    "filesystems": [
+                        "btrfs",
+                        "ext4"
+                    ]
                 }
             ],
             "registry": "ghcr.io/frostyard/snow",
