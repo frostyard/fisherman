@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/tuna-os/fisherman/internal/post"
 	"github.com/tuna-os/fisherman/internal/progress"
@@ -429,17 +430,29 @@ func GenerateSystemThumbnails(target string, composeFsNative bool) int {
 	}
 
 	// Fix ownership: skel thumbnails owned by root (correct); user home
-	// thumbnails owned by the user (uid 1000).
-	if count > 0 {
-		if homeDirEntries, err := os.ReadDir(homeBase); err == nil {
-			for _, e := range homeDirEntries {
-				if !e.IsDir() {
-					continue
-				}
-				thumbBase := filepath.Join(homeBase, e.Name(), ".cache", "thumbnails")
-				_ = runner.Run("chown", "-R", "1000:1000", thumbBase)
-				_ = runner.Run("restorecon", "-R", thumbBase)
+	// caches owned by the home's owner. The cache dirs were pre-created above
+	// as root, so this must run even when zero thumbnails were generated —
+	// otherwise a fresh home is left with a root-owned ~/.cache.
+	if homeDirEntries, err := os.ReadDir(homeBase); err == nil {
+		for _, e := range homeDirEntries {
+			if !e.IsDir() {
+				continue
 			}
+			home := filepath.Join(homeBase, e.Name())
+			cache := filepath.Join(home, ".cache")
+			if _, err := os.Stat(cache); err != nil {
+				continue
+			}
+			fi, err := os.Stat(home)
+			if err != nil {
+				continue
+			}
+			st, ok := fi.Sys().(*syscall.Stat_t)
+			if !ok {
+				continue
+			}
+			_ = runner.Run("chown", "-R", fmt.Sprintf("%d:%d", st.Uid, st.Gid), cache)
+			_ = runner.Run("restorecon", "-R", cache)
 		}
 	}
 

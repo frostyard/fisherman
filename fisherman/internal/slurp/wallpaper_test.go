@@ -1,6 +1,11 @@
 package slurp
 
 import (
+	"fmt"
+	"io"
+	"syscall"
+
+	"github.com/tuna-os/fisherman/internal/runner"
 	"os"
 	"path/filepath"
 	"testing"
@@ -218,4 +223,61 @@ func splitFields(s string) []string {
 		fields = append(fields, field)
 	}
 	return fields
+}
+
+// TestGenerateSystemThumbnails_ChownsUserCacheWithoutWallpapers reproduces the
+// root-owned ~/.cache bug: the cache dirs are pre-created as root while
+// collecting candidates, so ownership must be fixed even when zero thumbnails
+// end up being generated (e.g. headless images with no wallpapers).
+func TestGenerateSystemThumbnails_ChownsUserCacheWithoutWallpapers(t *testing.T) {
+	origOutput, origRun := runner.OutputFn, runner.RunFn
+	t.Cleanup(func() { runner.OutputFn, runner.RunFn = origOutput, origRun })
+
+	// Pretend a thumbnailer exists so the candidate dirs get created.
+	runner.OutputFn = func(name string, args ...string) ([]byte, error) {
+		return []byte("/usr/bin/gdk-pixbuf-thumbnailer\n"), nil
+	}
+	var calls [][]string
+	runner.RunFn = func(stdin io.Reader, name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+
+	target := t.TempDir()
+	home := filepath.Join(target, "state", "os", "default", "var", "home", "alice")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	n := GenerateSystemThumbnails(target, true)
+	if n != 0 {
+		t.Fatalf("expected 0 thumbnails, got %d", n)
+	}
+
+	cache := filepath.Join(home, ".cache")
+	if _, err := os.Stat(filepath.Join(cache, "thumbnails", "large")); err != nil {
+		t.Fatalf("expected cache dir to be created: %v", err)
+	}
+
+	// Ownership fix must target the user's .cache with the home dir's real
+	// owner (not hardcoded 1000:1000, and not skipped because count == 0).
+	fi, err := os.Stat(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := fi.Sys().(*syscall.Stat_t)
+	want := fmt.Sprintf("%d:%d", st.Uid, st.Gid)
+
+	var chowned bool
+	for _, c := range calls {
+		if c[0] == "chown" && c[len(c)-1] == cache {
+			chowned = true
+			if c[len(c)-2] != want {
+				t.Errorf("chown owner = %q, want %q (home dir owner)", c[len(c)-2], want)
+			}
+		}
+	}
+	if !chowned {
+		t.Errorf("no chown of %s recorded; calls: %v", cache, calls)
+	}
 }
