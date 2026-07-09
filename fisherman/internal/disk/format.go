@@ -146,8 +146,27 @@ func MountEFI(rootMount, efiPart string) error {
 }
 
 // FormatVar formats a device as XFS for use as a dedicated /var partition.
+// The device is wiped first: a leftover partition table (e.g. from a previous
+// full install on this disk) would otherwise survive mkfs.xfs — the backup GPT
+// header lives at the end of the disk — leaving blkid ambiguous and stale
+// kernel partition devices in place.
 func FormatVar(dev string) error {
+	if err := runner.Run("wipefs", "-a", dev); err != nil {
+		return err
+	}
 	return runner.Run("mkfs.xfs", "-f", "-L", "var", dev)
+}
+
+// FSType returns the filesystem type of dev as reported by blkid (e.g. "xfs",
+// "ext4"). Returns an empty string when the device carries no whole-device
+// filesystem signature — including when it holds a partition table instead
+// (blkid reports that as PTTYPE, not TYPE).
+func FSType(dev string) string {
+	out, err := runner.Output("blkid", "-s", "TYPE", "-o", "value", dev)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // UUID returns the filesystem UUID of dev using blkid.
