@@ -3,6 +3,7 @@ package post
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -52,7 +53,7 @@ func CreateUser(sysroot string, u UserConfig) error {
 	args := []string{
 		"--root", root,
 		"--create-home",
-		"--shell", "/bin/bash",
+		"--shell", loginShell(root),
 	}
 	if u.Fullname != "" {
 		args = append(args, "--comment", u.Fullname)
@@ -77,4 +78,22 @@ func CreateUser(sysroot string, u UserConfig) error {
 
 	fmt.Printf("  created user %q in installed system\n", u.Username)
 	return nil
+}
+
+// loginShell picks the login shell for the created user, validating each
+// candidate against the installed system's root rather than the live
+// environment. /usr/bin/bash comes first: on merged-/usr images /bin is a
+// symlink that may not resolve in every mount context, so the canonical path
+// is the safe choice. If nothing validates, /usr/bin/bash is still returned
+// so the account is created with a sane value (useradd itself only warns).
+func loginShell(root string) string {
+	candidates := []string{"/usr/bin/bash", "/bin/bash", "/usr/bin/sh", "/bin/sh"}
+	for _, shell := range candidates {
+		fi, err := os.Stat(filepath.Join(root, shell))
+		if err == nil && fi.Mode().IsRegular() && fi.Mode()&0111 != 0 {
+			return shell
+		}
+	}
+	fmt.Printf("  warning: no login shell found under %s, defaulting to /usr/bin/bash\n", root)
+	return "/usr/bin/bash"
 }
