@@ -326,6 +326,18 @@ func main() {
 	}
 	step := 1
 
+	// Preflight: keepExisting mounts the raw /var device as-is, which only
+	// works when the disk carries a whole-disk filesystem. A disk holding a
+	// partition table (e.g. a previous full install) has nothing mountable at
+	// the raw device, and the mount at step 5.5 would fail AFTER the system
+	// disk has already been wiped. Fail here instead, before anything
+	// destructive happens.
+	if hasVarDisk && r.VarDisk.KeepExisting {
+		if fstype := disk.FSType(r.VarDisk.Disk); fstype == "" {
+			fatal("varDisk: keepExisting is set but %s has no whole-disk filesystem (it holds a partition table or is blank) — format the /var disk or disable keep-existing", r.VarDisk.Disk)
+		}
+	}
+
 	// ── Immediate: Apply friendly audio names to live session ─────────────
 	// Detect hardware, rename ugly ALSA names, hide S/PDIF etc. Takes effect
 	// immediately via WirePlumber restart. Non-fatal.

@@ -1,11 +1,13 @@
 package disk_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tuna-os/fisherman/internal/disk"
+	"github.com/tuna-os/fisherman/internal/runner"
 )
 
 // ── FormatEFI ─────────────────────────────────────────────────────────────
@@ -26,6 +28,65 @@ func TestFormatBoot(t *testing.T) {
 		t.Fatalf("FormatBoot: %v", err)
 	}
 	assertSingleCall(t, rec, "mkfs.ext4", []string{"-L", "boot", "-F", "/dev/sda2"})
+}
+
+// ── FormatVar ─────────────────────────────────────────────────────────────
+
+// TestFormatVar is a regression test for the two-disk /var install: a disk
+// reused from a previous full install still carries a GPT partition table
+// (the backup header sits at the end of the disk, out of mkfs.xfs's reach),
+// so FormatVar must wipe all signatures before formatting.
+func TestFormatVar(t *testing.T) {
+	rec := setupRecorder(t)
+	if err := disk.FormatVar("/dev/vdb"); err != nil {
+		t.Fatalf("FormatVar: %v", err)
+	}
+	if len(rec.calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d: %+v", len(rec.calls), rec.calls)
+	}
+	if rec.calls[0].name != "wipefs" || !equalSlice(rec.calls[0].args, []string{"-a", "/dev/vdb"}) {
+		t.Errorf("call 0 = %s %v, want wipefs [-a /dev/vdb]", rec.calls[0].name, rec.calls[0].args)
+	}
+	if rec.calls[1].name != "mkfs.xfs" || !equalSlice(rec.calls[1].args, []string{"-f", "-L", "var", "/dev/vdb"}) {
+		t.Errorf("call 1 = %s %v, want mkfs.xfs [-f -L var /dev/vdb]", rec.calls[1].name, rec.calls[1].args)
+	}
+}
+
+// ── FSType ────────────────────────────────────────────────────────────────
+
+// TestFSType covers the keepExisting preflight: a whole-disk filesystem
+// reports its TYPE; a partitioned disk (blkid emits only PTTYPE, so the TYPE
+// query returns nothing) and a blank disk (blkid exits non-zero) both yield "".
+func TestFSType(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		err  error
+		want string
+	}{
+		{name: "whole-disk xfs", out: "xfs\n", want: "xfs"},
+		{name: "partitioned disk", out: "", want: ""},
+		{name: "blank disk", err: fmt.Errorf("blkid: exit status 2"), want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := runner.OutputFn
+			runner.OutputFn = func(name string, args ...string) ([]byte, error) {
+				if name != "blkid" {
+					t.Errorf("command = %q, want blkid", name)
+				}
+				if !equalSlice(args, []string{"-s", "TYPE", "-o", "value", "/dev/vdb"}) {
+					t.Errorf("args = %v, want [-s TYPE -o value /dev/vdb]", args)
+				}
+				return []byte(tt.out), tt.err
+			}
+			t.Cleanup(func() { runner.OutputFn = old })
+
+			if got := disk.FSType("/dev/vdb"); got != tt.want {
+				t.Errorf("FSType = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 // ── FormatRoot ────────────────────────────────────────────────────────────
