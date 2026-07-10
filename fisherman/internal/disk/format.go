@@ -10,6 +10,13 @@ import (
 	"github.com/tuna-os/fisherman/internal/runner"
 )
 
+// BtrfsRootMountOpts are the mount options used for the root btrfs subvolume
+// layout (@, @home, @snapshots). The installed system's state/deploy tree lives
+// inside the @ subvolume, so any (re)mount of the root partition that post-install
+// steps write through must use these options; a bare mount would expose the
+// btrfs top-level instead, where state/deploy does not exist.
+const BtrfsRootMountOpts = "subvol=@,compress=zstd:1"
+
 // FormatEFI formats a partition as FAT32 for use as the EFI System Partition.
 func FormatEFI(part string) error {
 	return runner.Run("mkfs.fat", "-F32", "-n", "EFI-SYSTEM", part)
@@ -89,6 +96,22 @@ func Mount(dev, target, opts string) error {
 	return nil
 }
 
+// RemountRoot remounts the root partition (partition partNum of diskDev) at
+// target after an operation that dropped the mount, such as retagging the root
+// GPT type for systemd-boot GPT auto-discovery.
+//
+// When the install uses btrfs subvolumes, the root must be remounted with
+// subvol=@ so that post-install writes land inside the @ subvolume where the
+// composefs deployment (state/deploy) lives. A bare remount would expose the
+// btrfs top-level instead, where state/deploy does not exist.
+func RemountRoot(diskDev string, partNum int, target string, btrfsSubvols bool) error {
+	opts := ""
+	if btrfsSubvols {
+		opts = BtrfsRootMountOpts
+	}
+	return Mount(PartName(diskDev, partNum), target, opts)
+}
+
 // MountTmpfs mounts a tmpfs of the given size (e.g. "4G") at path, creating
 // the directory if needed.
 func MountTmpfs(path, size string) error {
@@ -138,7 +161,7 @@ func SetupBtrfsSubvolumes(dev, target string) error {
 	}
 
 	// Remount with the @ subvolume and transparent compression.
-	return Mount(dev, target, "subvol=@,compress=zstd:1")
+	return Mount(dev, target, BtrfsRootMountOpts)
 }
 
 // FormatBoot formats a partition as ext4 for use as /boot.

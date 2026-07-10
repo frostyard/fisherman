@@ -922,8 +922,12 @@ func main() {
 		if err := os.MkdirAll(activeTargetMount, 0o755); err != nil {
 			fatal("recreating target mountpoint before remount: %v", err)
 		}
-		rootPart := disk.PartName(r.Disk, 2)
-		if err := disk.Mount(rootPart, activeTargetMount, ""); err != nil {
+		// Preserve the btrfs subvolume layout: SetupBtrfsSubvolumes mounted the
+		// target with subvol=@, and post-install steps (hostname, flatpaks) write
+		// through state/deploy inside that subvolume. Remounting without subvol=@
+		// would expose the btrfs top-level instead, where state/deploy does not
+		// exist, causing "finding composefs deploy etc" to fail.
+		if err := disk.RemountRoot(r.Disk, 2, activeTargetMount, r.BtrfsSubvolumes); err != nil {
 			fatal("remounting root partition after retagging: %v", err)
 		}
 		// Remount EFI so that Plymouth/LUKS arg writes land on the real ESP
