@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Validate CI workflow contracts
+        run: tests/check-ci-workflows.sh
       - uses: actions/setup-go@v5
         with:
           go-version-file: fisherman/go.mod

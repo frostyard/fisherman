@@ -177,9 +177,12 @@ Fast CI (PR gate) runs a subset. Add new images to `tests/bootcrew-matrix.yaml` 
 The Frostyard fork's SSH-fixture build workflow publishes under
 `ghcr.io/frostyard/fisherman/<image>:ssh-enabled`; Bootcrew continues to use
 the existing public upstream fixtures until that namespace has been
-bootstrapped. Hosted-runner Bootcrew jobs explicitly select the runner-bundled
+bootstrapped. Hosted-runner Bootcrew PR jobs explicitly select the runner-bundled
 `runc`; Ubuntu runner image 20260726's Podman 5.8.4 default `crun` rejects the
-generated OCI runtime version.
+generated OCI runtime version. The Bootcrew lint gate runs
+`tests/check-ci-workflows.sh` to preserve both workflow contracts. Nightly
+tests install Ubuntu's apt-provided Podman instead of using the runner-bundled
+version.
 
 ## License
 
