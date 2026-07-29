@@ -60,6 +60,12 @@ func VerifyAndPinImage(imgref, keyPath string) (string, error) {
 	}
 
 	bare := bareImageRef(imgref)
+	if strings.Contains(bare, "@sha256:") {
+		if err := CosignVerifyFn(bare, keyPath); err != nil {
+			return "", err
+		}
+		return bare, nil
+	}
 
 	out, err := SkopeoInspectFn("docker://" + bare)
 	if err != nil {

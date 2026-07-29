@@ -39,6 +39,75 @@ When running inside a Flatpak sandbox, fisherman automatically wraps host subpro
 sudo fisherman <recipe.json>
 ```
 
+## Snosi secure installs
+
+The explicit `secureInstall` recipe path installs only Snosi schema-1 secure
+OCI images. It is not inferred from an image name and refuses manual layouts,
+separate `/var`, non-Btrfs filesystems, non-systemd bootloaders, non-LUKS root,
+undersized disks (30 GiB), undersized ESPs (2 GiB), unsupported installer
+versions, unsigned images, mutable tags, and images without
+`io.snosi.bootc.secureboot-capable=true`.
+It also requires the restrictive `/etc/containers/policy.json` from the
+secure installer medium and passes that policy to the digest-pinned Podman
+pull; it never falls back to a permissive policy.
+
+```json
+{
+  "disk": "/dev/nvme0n1",
+  "filesystem": "btrfs",
+  "composeFsBackend": true,
+  "bootloader": "systemd",
+  "encryption": {"type": "luks-passphrase"},
+  "image": "ghcr.io/frostyard/cayo:20260729000000",
+  "targetImgref": "ghcr.io/frostyard/cayo:stable",
+  "cosignPubKey": "/usr/lib/snosi/cosign.pub",
+  "hostname": "cayo",
+  "secureInstall": {
+    "recoveryKeyFile": "/run/snosi-recovery-key",
+    "mokPasswordFile": "/run/snosi-mok-password"
+  }
+}
+```
+
+Both secure credential files must be operator-owned, regular non-symlink files
+with exactly one hard link and mode `0600`. The recovery credential is read from
+the external file, is never accepted in `encryption.passphrase`, and is removed
+only by the operator. Fisherman never prints, records, or copies it to the
+target. The MOK password is read as raw bytes and must be 8-16 printable,
+non-whitespace ASCII bytes with no newline. Fisherman uses mokutil's hash-file
+flow; mokutil requires the password in the `--generate-hash=<password>` process
+argument, an upstream limitation that can be visible to privileged local process
+inspection. Fisherman does not log, emit, or persist that argument, its hash, or
+the password. The secure branch uses the
+schema-1 bootc Type #2 invocation without `--karg`, does not mutate BLS entries
+for Plymouth or LUKS, verifies the installed UKI `.pcrpkey`, enrolls the TPM
+against signed PCR 11, and records public provenance at
+`/var/lib/snosi/bootc-secure-install.json`.
+The secure source is resolved and verified once to an immutable digest; the
+required `targetImgref` is a bare tag for the exact same repository and is
+passed only to bootc as `--target-imgref` for future policy-enforced updates.
+Provenance stores these separately as `oci_ref` and `tracking_ref`; Fisherman
+does not infer either from a product name or fetch the tag after verification.
+
+Recovery files use raw whole-file bytes for LUKS formatting, open, verification,
+and TPM enrollment: a trailing newline is a credential byte, never trimmed.
+Bootc lays down shim and MokManager; Fisherman validates them and owns only the
+MOK-signed systemd-boot second-stage repair.
+
+Recovery commands operate only on an already mounted, authenticated deployment:
+
+```bash
+sudo fisherman secure-restage-mok /mnt/target /run/snosi-recovery-key /run/snosi-mok-password
+sudo fisherman secure-repair-esp /mnt/target /run/snosi-recovery-key
+```
+
+Neither command partitions, formats, installs an OCI image, changes LUKS
+metadata, or writes deployment `/etc` or `/var`. ESP repair verifies the
+immutable MOK-signed second-stage source and its same-filesystem temporary copy
+immediately before atomically replacing only `EFI/BOOT/grubx64.efi`. Recovery
+authentication derives the sole LUKS mapper mounted at the supplied target root;
+it never uses the installer's active host root mapper.
+
 ## Recipe format
 
 ```json

@@ -51,6 +51,17 @@ func Open(partition, passphrase, mapperName string) error {
 	)
 }
 
+// FormatWithKeyFile formats LUKS2 using the recovery file as-is. This keeps
+// trailing newlines and every other byte identical to later TPM enrollment.
+func FormatWithKeyFile(partition, keyFile string) error {
+	return runner.Run("cryptsetup", "luksFormat", "--batch-mode", "--type=luks2", "--key-file="+keyFile, partition)
+}
+
+// OpenWithKeyFile opens LUKS with the same unmodified recovery file bytes.
+func OpenWithKeyFile(partition, keyFile, mapperName string) error {
+	return runner.Run("cryptsetup", "luksOpen", "--key-file="+keyFile, partition, mapperName)
+}
+
 // Close closes the LUKS device identified by mapperName.
 func Close(mapperName string) error {
 	return runner.Run("cryptsetup", "luksClose", mapperName)

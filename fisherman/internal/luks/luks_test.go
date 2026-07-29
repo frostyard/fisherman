@@ -73,6 +73,26 @@ func TestFormat(t *testing.T) {
 	}
 }
 
+func TestSecureKeyFilePreservesTrailingNewlineAcrossLUKSOperations(t *testing.T) {
+	rec := setup(t)
+	const keyFile = "/run/recovery-with-newline"
+	if err := luks.FormatWithKeyFile("/dev/sda2", keyFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := luks.OpenWithKeyFile("/dev/sda2", keyFile, "root"); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range rec.calls {
+		hasKeyFile := false
+		for _, arg := range call.args {
+			hasKeyFile = hasKeyFile || arg == "--key-file="+keyFile
+		}
+		if !hasKeyFile || call.stdin != "" {
+			t.Fatalf("secure key-file call did not preserve whole-file semantics: %+v", call)
+		}
+	}
+}
+
 func TestOpen(t *testing.T) {
 	const part = "/dev/sda3"
 	const pass = "hunter2"

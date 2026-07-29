@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tuna-os/fisherman/internal/disk"
 	"github.com/tuna-os/fisherman/internal/install"
@@ -13,6 +15,7 @@ import (
 	"github.com/tuna-os/fisherman/internal/post"
 	"github.com/tuna-os/fisherman/internal/progress"
 	"github.com/tuna-os/fisherman/internal/recipe"
+	"github.com/tuna-os/fisherman/internal/secure"
 	"github.com/tuna-os/fisherman/internal/slurp"
 )
 
@@ -26,9 +29,26 @@ const (
 // stays readable. Tests don't touch these directly — they exercise the helper
 // functions in disk/, luks/, post/ which take the paths as arguments.
 var (
-	targetMount = defaultTargetMount
-	luksMapper  = defaultLuksMapper
+	targetMount                = defaultTargetMount
+	luksMapper                 = defaultLuksMapper
+	partitionSecureSystemdBoot = disk.PartitionSecureSystemdBoot
 )
+
+func partitionDisk(r *recipe.Recipe, systemdBoot, encrypted bool) error {
+	if r.SecureInstall != nil {
+		return partitionSecureSystemdBoot(r.Disk)
+	}
+	if r.Filesystem == "zfs" {
+		return disk.PartitionZFS(r.Disk)
+	}
+	if systemdBoot {
+		return disk.PartitionSystemdBoot(r.Disk)
+	}
+	if encrypted {
+		return disk.PartitionEncrypted(r.Disk)
+	}
+	return disk.Partition(r.Disk)
+}
 
 // cleanup is global so fatal() can tear everything down on any error path.
 var cleanup = &post.Cleanup{}
@@ -62,7 +82,7 @@ func buildProfile(needsPull, hasLUKS, hasTPM2enrolment, hasVarDiskFormat bool) [
 	if hasLUKS {
 		weights = append(weights, 1) // LUKS setup
 	}
-	weights = append(weights, 0, 0)     // format root, mount
+	weights = append(weights, 0, 0) // format root, mount
 	if hasVarDiskFormat {
 		weights = append(weights, 0) // format /var disk (fast)
 	}
@@ -157,6 +177,41 @@ func expandPath() {
 	os.Setenv("PATH", prefix)
 }
 
+func validateSecureRecoveryKey(r *recipe.Recipe) error {
+	if r.SecureInstall == nil {
+		return nil
+	}
+	if err := secure.ValidatePrivateRegularFile(r.SecureInstall.RecoveryKeyFile); err != nil {
+		return fmt.Errorf("validating secure recovery key: %w", err)
+	}
+	info, err := os.Lstat(r.SecureInstall.RecoveryKeyFile)
+	if err != nil {
+		return fmt.Errorf("stating secure recovery key: %w", err)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("secure recovery key is empty")
+	}
+	return nil
+}
+
+// acceptSecureImage pins only the image used during installation. The
+// validated targetImgref remains the day-2 update reference passed to bootc.
+func acceptSecureImage(r *recipe.Recipe) error {
+	pinned, err := secure.AcceptImage(r.Image, r.CosignPubKey)
+	if err != nil {
+		return err
+	}
+	r.Image = pinned
+	return nil
+}
+
+func targetImgrefForInstall(r *recipe.Recipe) string {
+	if r.SecureInstall == nil && r.TargetImgref == r.Image {
+		return ""
+	}
+	return r.TargetImgref
+}
+
 // checkRequiredTools verifies that every host binary needed by this recipe
 // is reachable on PATH before we touch any disks, and returns a clear error
 // naming the missing tool and the package that provides it.
@@ -179,6 +234,14 @@ func checkRequiredTools(r *recipe.Recipe) error {
 		// Check before touching any disks — a missing tool at step 9 (after
 		// partitioning and OS install) would leave the disk partially modified.
 		{"systemd-cryptenroll", "systemd", r.Encryption.Type == "tpm2-luks" || r.Encryption.Type == "tpm2-luks-passphrase"},
+		{"systemd-cryptenroll", "systemd", r.SecureInstall != nil},
+		{"objcopy", "binutils", r.SecureInstall != nil},
+		{"sbverify", "sbsigntool", r.SecureInstall != nil},
+		{"mokutil", "mokutil", r.SecureInstall != nil},
+		{"openssl", "openssl", r.SecureInstall != nil},
+		{"blkid", "util-linux", r.SecureInstall != nil},
+		{"blockdev", "util-linux", r.SecureInstall != nil},
+		{"findmnt", "util-linux", r.SecureInstall != nil},
 		{"skopeo", "skopeo", true},
 		{"podman", "podman", true},
 	}
@@ -203,6 +266,10 @@ Usage:
   fisherman validate <recipe.json> validate a recipe without installing
   fisherman images [<query>]       list or search the image catalog
   fisherman scan <disk>            scan disk for Windows data available to migrate
+  fisherman secure-restage-mok <target-root> <recovery-key-file> <mok-password-file>
+                                  restage only MOK enrollment for an installed secure system
+  fisherman secure-repair-esp <target-root> <recovery-key-file>
+                                  repair only the secure ESP second stage
   fisherman version                print version information
   fisherman help                   show this help
 
@@ -219,6 +286,40 @@ Examples:
   fisherman images --plain yellowfin
   fisherman scan /dev/nvme0n1
 `)
+}
+
+func runSecureOperation(operation string, args []string) {
+	want := 2
+	if operation == "secure-restage-mok" {
+		want = 3
+	}
+	if len(args) != want {
+		if operation == "secure-restage-mok" {
+			fatal("usage: fisherman %s <target-root> <recovery-key-file> <mok-password-file>", operation)
+		}
+		fatal("usage: fisherman %s <target-root> <recovery-key-file>", operation)
+	}
+	root, recovery := args[0], args[1]
+	contract, err := secure.LoadInstalledContract(root)
+	if err != nil {
+		fatal("validating installed secure state: %v", err)
+	}
+	backing, err := secure.ResolveTargetRootBackingDevice(root)
+	if err != nil {
+		fatal("resolving secure LUKS backing device: %v", err)
+	}
+	if operation == "secure-restage-mok" {
+		if err := secure.RestageMOK(root, contract, recovery, args[2], backing); err != nil {
+			fatal("secure MOK restage: %v", err)
+		}
+		return
+	}
+	if err := secure.AuthenticateRecovery(recovery, backing); err != nil {
+		fatal("authenticating secure ESP repair: %v", err)
+	}
+	if err := secure.RepairESP(root, contract.MOKCertificate); err != nil {
+		fatal("secure ESP repair: %v", err)
+	}
 }
 
 func main() {
@@ -252,6 +353,9 @@ func main() {
 		}
 		fmt.Println(output)
 		return
+	case "secure-restage-mok", "secure-repair-esp":
+		runSecureOperation(os.Args[1], os.Args[2:])
+		return
 	}
 
 	r, err := recipe.Load(os.Args[1])
@@ -260,6 +364,25 @@ func main() {
 	}
 	if err := r.Validate(); err != nil {
 		fatal("invalid recipe: %v", err)
+	}
+	if err := validateSecureRecoveryKey(r); err != nil {
+		fatal("invalid secure recovery credential: %v", err)
+	}
+	if r.SecureInstall != nil {
+		luksMapper = "root"
+		if err := secure.ValidateDiskSize(r.Disk); err != nil {
+			fatal("secure target capacity: %v", err)
+		}
+		if err := secure.ValidateVersions(); err != nil {
+			fatal("secure installer prerequisites: %v", err)
+		}
+		if _, err := os.Stat("/etc/containers/policy.json"); err != nil {
+			fatal("secure OCI policy: %v", err)
+		}
+		if err := acceptSecureImage(r); err != nil {
+			fatal("secure image acceptance: %v", err)
+		}
+		progress.Secure("oci_acceptance", "passed")
 	}
 
 	// Recipe-level overrides for the otherwise-shared global mount paths.
@@ -396,8 +519,8 @@ func main() {
 
 	var activeTargetMount string
 	var activeEfiPart string
-	var activeRootPart string // only used for TPM2 enrolment, empty in manual mode
-	var activeLuksUUID string // LUKS partition UUID for boot entry injection; empty if no encryption
+	var activeRootPart string  // only used for TPM2 enrolment, empty in manual mode
+	var activeLuksUUID string  // LUKS partition UUID for boot entry injection; empty if no encryption
 	var luksRecoveryKey string // random passphrase for tpm2-luks (emitted as recovery key)
 
 	if isManual {
@@ -430,24 +553,8 @@ func main() {
 		pi++
 		step++
 
-		if r.Filesystem == "zfs" {
-			if err := disk.PartitionZFS(r.Disk); err != nil {
-				fatal("partitioning disk for ZFS: %v", err)
-			}
-		} else if isSystemdBoot {
-			// systemd-boot always uses a 2-partition layout regardless of encryption.
-			// LUKS (if requested) wraps p2 (root); the 1 GiB FAT32 ESP stays unencrypted.
-			if err := disk.PartitionSystemdBoot(r.Disk); err != nil {
-				fatal("partitioning disk: %v", err)
-			}
-		} else if hasEncryption {
-			if err := disk.PartitionEncrypted(r.Disk); err != nil {
-				fatal("partitioning disk: %v", err)
-			}
-		} else {
-			if err := disk.Partition(r.Disk); err != nil {
-				fatal("partitioning disk: %v", err)
-			}
+		if err := partitionDisk(r, isSystemdBoot, hasEncryption); err != nil {
+			fatal("partitioning disk: %v", err)
 		}
 
 		var efiPart, bootPart, rootPart string
@@ -473,6 +580,11 @@ func main() {
 		pi++
 		step++
 
+		if r.SecureInstall != nil {
+			if err := secure.ValidateESPSize(efiPart); err != nil {
+				fatal("secure ESP capacity: %v", err)
+			}
+		}
 		if err := disk.FormatEFI(efiPart); err != nil {
 			fatal("formatting EFI: %v", err)
 		}
@@ -508,15 +620,30 @@ func main() {
 				_ = luks.Close(luksMapper)
 			}
 
-			if err := luks.Format(rootPart, passphrase); err != nil {
+			var formatErr error
+			if r.SecureInstall != nil {
+				formatErr = luks.FormatWithKeyFile(rootPart, r.SecureInstall.RecoveryKeyFile)
+			} else {
+				formatErr = luks.Format(rootPart, passphrase)
+			}
+			if err := formatErr; err != nil {
 				fatal("LUKS format: %v", err)
 			}
-			if err := luks.Open(rootPart, passphrase, luksMapper); err != nil {
+			var openErr error
+			if r.SecureInstall != nil {
+				openErr = luks.OpenWithKeyFile(rootPart, r.SecureInstall.RecoveryKeyFile, luksMapper)
+			} else {
+				openErr = luks.Open(rootPart, passphrase, luksMapper)
+			}
+			if err := openErr; err != nil {
 				fatal("LUKS open: %v", err)
 			}
 			cleanup.SetLUKS(luksMapper)
 			rootDev = luks.MapperPath(luksMapper)
 			activeLuksUUID = luks.UUID(rootPart)
+			if r.SecureInstall != nil && activeLuksUUID == "" {
+				fatal("reading secure LUKS UUID")
+			}
 		}
 
 		// ── Step 4: Format root filesystem ──────────────────────────────────
@@ -646,11 +773,9 @@ func main() {
 	pi++
 	step++
 
-	// Only pass --target-imgref when it is non-empty and differs from the source.
-	targetImgref := r.TargetImgref
-	if targetImgref == r.Image {
-		targetImgref = ""
-	}
+	// Secure recipes retain their validated registry tag for day-2 updates while
+	// every source operation consumes the accepted digest.
+	targetImgref := targetImgrefForInstall(r)
 
 	// ZFS installs must use composefs-backend because bootc's ostree path checks
 	// the filesystem type and rejects ZFS; composefs-native bypasses that check.
@@ -659,11 +784,16 @@ func main() {
 		composeFsBackend = true
 	}
 
+	var expectedComposefs string
+	cosignKey := r.CosignPubKey
+	if r.SecureInstall != nil {
+		cosignKey = ""
+	}
 	if err := install.BootcInstall(install.Options{
 		SourceImgref:          r.Image,
 		TargetImgref:          targetImgref,
 		SelinuxDisabled:       r.SelinuxDisabled,
-		CosignKeyPath:         r.CosignPubKey,
+		CosignKeyPath:         cosignKey,
 		UnifiedStorage:        r.UnifiedStorage,
 		ComposeFsBackend:      composeFsBackend,
 		Bootloader:            r.Bootloader,
@@ -672,8 +802,36 @@ func main() {
 		NeedsPull:             imageCheck.NeedsPull,
 		LayerCount:            imageCheck.LayerCount,
 		AdditionalImageStores: r.AdditionalImageStores,
+		SecureInstall:         r.SecureInstall != nil,
+		SecurePolicyPath:      map[bool]string{true: "/etc/containers/policy.json"}[r.SecureInstall != nil],
+		SecureComposefsDigest: map[bool]*string{true: &expectedComposefs}[r.SecureInstall != nil],
 	}); err != nil {
 		fatal("bootc install: %v", err)
+	}
+	var secureContract *secure.Contract
+	var secureArtifacts *secure.InstalledArtifacts
+	if r.SecureInstall != nil {
+		secureContract, err = secure.LoadInstalledContract(activeTargetMount)
+		if err != nil {
+			fatal("validating deployed secure contract: %v", err)
+		}
+		if err := secure.RepairESP(activeTargetMount, secureContract.MOKCertificate); err != nil {
+			fatal("installing verified secure ESP second stage: %v", err)
+		}
+		if expectedComposefs == "" {
+			fatal("computing verified deployment composefs identity")
+		}
+		secureArtifacts, err = secure.VerifyInstalled(activeTargetMount, secureContract, expectedComposefs)
+		if err != nil {
+			fatal("validating installed secure artifacts: %v", err)
+		}
+		progress.Secure("contract_validation", "passed")
+		if err := secure.EnrollTPMBytes(r.SecureInstall.RecoveryKeyFile, secureArtifacts.PCRPublicKey, activeRootPart); err != nil {
+			fatal("enrolling secure TPM unlock: %v", err)
+		}
+		if err := secure.StageMOK(filepath.Join(activeTargetMount, strings.TrimPrefix(secureContract.MOKCertificate, "/")), r.SecureInstall.MOKPasswordFile); err != nil {
+			fatal("staging secure MOK enrollment: %v", err)
+		}
 	}
 
 	// systemd-boot composefs installs rely on GPT auto-discovery for the root
@@ -792,18 +950,20 @@ func main() {
 
 	// Ensure rhgb and quiet are in every BLS loader entry so Plymouth shows
 	// the graphical boot splash. Non-fatal: the system boots fine without it.
-	n, err := post.EnsurePlymouthArgs(activeTargetMount)
-	if err != nil {
-		progress.Info(fmt.Sprintf("Warning: could not set Plymouth kernel args: %v", err))
-	} else if n > 0 {
-		progress.Info(fmt.Sprintf("Added Plymouth boot args to %d loader entr%s", n, map[bool]string{true: "y", false: "ies"}[n == 1]))
+	if r.SecureInstall == nil {
+		n, err := post.EnsurePlymouthArgs(activeTargetMount)
+		if err != nil {
+			progress.Info(fmt.Sprintf("Warning: could not set Plymouth kernel args: %v", err))
+		} else if n > 0 {
+			progress.Info(fmt.Sprintf("Added Plymouth boot args to %d loader entr%s", n, map[bool]string{true: "y", false: "ies"}[n == 1]))
+		}
 	}
 
 	// Inject rd.luks.name=<UUID>=root into every BLS entry so the initrd
 	// unlocks the LUKS container and maps it to /dev/mapper/root before
 	// mounting the root filesystem. bootc install to-filesystem only sees the
 	// open mapper device and never writes LUKS parameters itself.
-	if activeLuksUUID != "" {
+	if activeLuksUUID != "" && r.SecureInstall == nil {
 		n, err := post.EnsureLuksArgs(activeTargetMount, activeLuksUUID)
 		if err != nil {
 			progress.Info(fmt.Sprintf("Warning: could not inject LUKS boot args: %v", err))
@@ -869,6 +1029,36 @@ func main() {
 	// so USB and network printers are found on first boot without configuration.
 	// Non-fatal: services are skipped if their unit files are absent from the image.
 	post.EnablePrintServices(activeTargetMount)
+
+	if r.SecureInstall != nil {
+		espPartUUID, err := secure.PartitionUUID(activeEfiPart)
+		if err != nil {
+			fatal("recording secure ESP identity: %v", err)
+		}
+		tokenID, err := secure.TPMTokenIdentity(activeRootPart)
+		if err != nil {
+			fatal("recording secure TPM token identity: %v", err)
+		}
+		mokCertificate, err := os.ReadFile(filepath.Join(activeTargetMount, strings.TrimPrefix(secureContract.MOKCertificate, "/")))
+		if err != nil {
+			fatal("reading secure MOK certificate: %v", err)
+		}
+		if !strings.Contains(r.Image, "@sha256:") {
+			fatal("recording secure OCI provenance: immutable digest missing")
+		}
+		if err := secure.WriteProvenance(activeTargetMount, secure.Provenance{
+			OCIRef: r.Image, TrackingRef: r.TargetImgref,
+			Capability: secure.CapabilityLabel + "=" + secure.CapabilityValue, Schema: secureContract.Schema,
+			Assembly: secureContract.Assembly.Compatibility, Composefs: secureArtifacts.ComposefsID, UKIHash: secureArtifacts.UKIHash,
+			MOKHash: secure.PublicFingerprint(mokCertificate), PCRHash: secure.PublicFingerprint(secureArtifacts.PCRPublicKey),
+			ESPPartUUID: espPartUUID, LUKSUUID: activeLuksUUID, TPMToken: tokenID,
+			Versions:  map[string]string{"bootc": secureContract.Installer.MinimumVersions.Bootc, "cosign": secureContract.Installer.MinimumVersions.Cosign, "systemd": secureContract.Installer.MinimumVersions.Systemd},
+			Completed: time.Now().UTC().Format(time.RFC3339),
+		}); err != nil {
+			fatal("writing secure install provenance: %v", err)
+		}
+		progress.Secure("provenance", "written")
+	}
 
 	// Warm all system caches (fonts, icons, schemas, pixbuf, ldconfig, man-db,
 	// flatpak appstream) so first boot is instant. Non-fatal.

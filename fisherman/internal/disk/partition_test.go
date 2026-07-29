@@ -307,6 +307,17 @@ func TestPartitionSystemdBoot_SfdiskScript(t *testing.T) {
 	}
 }
 
+func TestPartitionSecureSystemdBootUsesDPSRootGUID(t *testing.T) {
+	rec := setupRecorder(t)
+	if err := disk.PartitionSecureSystemdBoot("/dev/nvme0n1"); err != nil {
+		t.Fatalf("PartitionSecureSystemdBoot: %v", err)
+	}
+	script := sfdiskStdin(t, rec)
+	if !strings.Contains(script, "type="+disk.GPTPartTypeLinuxRootX86_64) {
+		t.Fatalf("secure systemd partition script lacks DPS x86-64 root GUID:\n%s", script)
+	}
+}
+
 // TestPartition_SfdiskArgs verifies the command-line arguments passed to sfdisk.
 func TestPartition_SfdiskArgs(t *testing.T) {
 	rec := setupRecorder(t)

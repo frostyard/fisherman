@@ -283,3 +283,156 @@ func TestLoad(t *testing.T) {
 		}
 	})
 }
+
+func TestSecureInstallRequiresExplicitCompatibleRecipe(t *testing.T) {
+	dir := t.TempDir()
+	diskPath := filepath.Join(dir, "disk")
+	recoveryKey := filepath.Join(dir, "recovery")
+	mokPassword := filepath.Join(dir, "mok-password")
+	cosignKey := filepath.Join(dir, "cosign.pub")
+	if err := os.WriteFile(diskPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recoveryKey, []byte("recovery"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mokPassword, []byte("MokPassw0rd"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cosignKey, []byte("public"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	valid := recipe.Recipe{
+		Disk:             diskPath,
+		Filesystem:       "btrfs",
+		ComposeFsBackend: true,
+		Bootloader:       "systemd",
+		Encryption:       recipe.Encryption{Type: "luks-passphrase"},
+		Hostname:         "secure-host",
+		Image:            "ghcr.io/frostyard/cayo:20260729000000",
+		TargetImgref:     "ghcr.io/frostyard/cayo:stable",
+		CosignPubKey:     cosignKey,
+		SecureInstall:    &recipe.SecureInstall{RecoveryKeyFile: recoveryKey, MOKPasswordFile: mokPassword},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid secure recipe rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*recipe.Recipe){
+		"composefs required":          func(r *recipe.Recipe) { r.ComposeFsBackend = false },
+		"systemd bootloader required": func(r *recipe.Recipe) { r.Bootloader = "grub2" },
+		"btrfs required":              func(r *recipe.Recipe) { r.Filesystem = "xfs" },
+		"fresh layout required":       func(r *recipe.Recipe) { r.CustomMounts = []recipe.CustomMount{{Partition: diskPath, Target: "/"}} },
+		"root mapper required":        func(r *recipe.Recipe) { r.LuksMapperName = "other" },
+		"recovery key file required":  func(r *recipe.Recipe) { r.SecureInstall.RecoveryKeyFile = "" },
+		"MOK password file required":  func(r *recipe.Recipe) { r.SecureInstall.MOKPasswordFile = "" },
+		"tracking ref required":       func(r *recipe.Recipe) { r.TargetImgref = "" },
+		"tracking ref digest forbidden": func(r *recipe.Recipe) {
+			r.TargetImgref = "ghcr.io/frostyard/cayo@sha256:deadbeef"
+		},
+		"tracking ref transport forbidden": func(r *recipe.Recipe) {
+			r.TargetImgref = "docker://ghcr.io/frostyard/cayo:stable"
+		},
+		"tracking ref local forbidden": func(r *recipe.Recipe) {
+			r.TargetImgref = "containers-storage:ghcr.io/frostyard/cayo:stable"
+		},
+		"tracking ref localhost forbidden": func(r *recipe.Recipe) {
+			r.Image = "localhost/frostyard/cayo:20260729000000"
+			r.TargetImgref = "localhost/frostyard/cayo:stable"
+		},
+		"tracking ref repository must match source": func(r *recipe.Recipe) {
+			r.TargetImgref = "ghcr.io/frostyard/snow:stable"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := valid
+			r.SecureInstall = &recipe.SecureInstall{RecoveryKeyFile: recoveryKey, MOKPasswordFile: mokPassword}
+			mutate(&r)
+			if err := r.Validate(); err == nil {
+				t.Fatal("secure recipe unexpectedly validated")
+			}
+		})
+	}
+}
+
+func TestSecureInstallRejectsUnsafeCredentialFiles(t *testing.T) {
+	dir := t.TempDir()
+	disk, cosign := filepath.Join(dir, "disk"), filepath.Join(dir, "cosign.pub")
+	for _, path := range []string{disk, cosign} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	credential := filepath.Join(dir, "credential")
+	if err := os.WriteFile(credential, []byte("credential"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	valid := func() recipe.Recipe {
+		return recipe.Recipe{Disk: disk, Filesystem: "btrfs", ComposeFsBackend: true, Bootloader: "systemd", Encryption: recipe.Encryption{Type: "luks-passphrase"}, Hostname: "h", Image: "ghcr.io/frostyard/cayo:build", TargetImgref: "ghcr.io/frostyard/cayo:stable", CosignPubKey: cosign, SecureInstall: &recipe.SecureInstall{RecoveryKeyFile: credential, MOKPasswordFile: credential}}
+	}
+	for name, prepare := range map[string]func(*recipe.Recipe){
+		"symlink": func(r *recipe.Recipe) {
+			link := filepath.Join(dir, "credential-link")
+			if err := os.Symlink(credential, link); err != nil {
+				t.Fatal(err)
+			}
+			r.SecureInstall.RecoveryKeyFile = link
+		},
+		"multiple links": func(r *recipe.Recipe) {
+			if err := os.Link(credential, filepath.Join(dir, "credential-hardlink")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"wrong mode": func(r *recipe.Recipe) {
+			if err := os.Chmod(credential, 0o640); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := valid()
+			prepare(&r)
+			if err := r.Validate(); err == nil {
+				t.Fatal("unsafe credential file accepted")
+			}
+		})
+	}
+}
+
+func TestSecureTrackingReferencesRejectMalformedOCIComponents(t *testing.T) {
+	dir := t.TempDir()
+	disk, recovery, key := filepath.Join(dir, "disk"), filepath.Join(dir, "recovery"), filepath.Join(dir, "key")
+	for _, path := range []string{disk, recovery, key} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	valid := recipe.Recipe{Disk: disk, Filesystem: "btrfs", ComposeFsBackend: true, Bootloader: "systemd", Encryption: recipe.Encryption{Type: "luks-passphrase"}, Hostname: "h", Image: "ghcr.io/frostyard/cayo:build", TargetImgref: "ghcr.io/frostyard/cayo:stable", CosignPubKey: key, SecureInstall: &recipe.SecureInstall{RecoveryKeyFile: recovery, MOKPasswordFile: recovery}}
+	for name, mutate := range map[string]func(*recipe.Recipe){
+		"empty repository component": func(r *recipe.Recipe) { r.TargetImgref = "ghcr.io//cayo:stable" },
+		"empty tag":                  func(r *recipe.Recipe) { r.TargetImgref = "ghcr.io/frostyard/cayo:" },
+		"ambiguous port":             func(r *recipe.Recipe) { r.TargetImgref = "ghcr.io:5000:bad/cayo:stable" },
+		"uppercase digest": func(r *recipe.Recipe) {
+			r.Image = "ghcr.io/frostyard/cayo@sha256:" + strings.Repeat("A", 64)
+			r.TargetImgref = "ghcr.io/frostyard/cayo:stable"
+		},
+		"empty digest": func(r *recipe.Recipe) {
+			r.Image = "ghcr.io/frostyard/cayo@sha256:"
+			r.TargetImgref = "ghcr.io/frostyard/cayo:stable"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := valid
+			mutate(&r)
+			if err := r.Validate(); err == nil {
+				t.Fatal("malformed reference accepted")
+			}
+		})
+	}
+	valid.Image = "ghcr.io:5000/frostyard/cayo:build"
+	valid.TargetImgref = "ghcr.io:5000/frostyard/cayo:stable"
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid registry port rejected: %v", err)
+	}
+}

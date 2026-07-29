@@ -153,6 +153,30 @@ func TestBuildBootcArgs_BaseArgs(t *testing.T) {
 	assertContains(t, args, "/target")
 }
 
+func TestBuildBootcArgs_SecureInstallUsesRequiredType2Prefix(t *testing.T) {
+	args := install.BuildBootcArgs(install.Options{
+		SecureInstall:    true,
+		ComposeFsBackend: true,
+		Bootloader:       "systemd",
+		ComposeFsOCIPath: "/run/fisherman/oci-cache",
+	}, "ghcr.io/frostyard/cayo@sha256:abc", "/target")
+	wantPrefix := []string{"install", "to-filesystem", "--composefs-backend", "--bootloader", "systemd", "--root-mount-spec", ""}
+	if len(args) < len(wantPrefix) || strings.Join(args[:len(wantPrefix)], "\x00") != strings.Join(wantPrefix, "\x00") {
+		t.Fatalf("secure bootc prefix = %q, want %q", args, wantPrefix)
+	}
+	assertAbsent(t, args, "--karg")
+	assertAbsent(t, args, "--skip-fetch-check")
+}
+
+func TestShouldVerifySourceSkipsAcceptedSecureDigest(t *testing.T) {
+	if install.ShouldVerifySource(install.Options{SecureInstall: true, CosignKeyPath: "/keys/cosign.pub"}) {
+		t.Fatal("secure source was scheduled for a second Cosign verification")
+	}
+	if !install.ShouldVerifySource(install.Options{CosignKeyPath: "/keys/cosign.pub"}) {
+		t.Fatal("generic source verification was disabled")
+	}
+}
+
 func TestBuildBootcArgs_ComposeFsBackend(t *testing.T) {
 	args := install.BuildBootcArgs(install.Options{ComposeFsBackend: true}, "", "/target")
 	assertContains(t, args, "--composefs-backend")
@@ -192,7 +216,7 @@ func TestBuildBootcArgs_NoComposeFsBackend_NoSourceImgref(t *testing.T) {
 // directory" when the OCI layout was exported but the flag was missing.
 func TestBuildBootcArgs_OCIPathWithoutComposefs(t *testing.T) {
 	args := install.BuildBootcArgs(install.Options{
-		ComposeFsBackend:  false,
+		ComposeFsBackend: false,
 		ComposeFsOCIPath: "/run/fisherman/oci-cache",
 	}, "", "/target")
 	assertContains(t, args, "--source-imgref")

@@ -161,6 +161,18 @@ func PartitionSystemdBoot(disk string) error {
 	return partition(disk, script)
 }
 
+// PartitionSecureSystemdBoot creates the schema-1 systemd-boot layout with a
+// DPS x86-64 root partition. The root is subsequently formatted as LUKS2.
+func PartitionSecureSystemdBoot(disk string) error {
+	script := strings.Join([]string{
+		"label: gpt",
+		"",
+		`size=2GiB, type=uefi, name="EFI-SYSTEM"`,
+		`type=4f68bce3-e8cd-4db1-96e7-fbcaf984b709, name="root"`,
+	}, "\n") + "\n"
+	return partition(disk, script)
+}
+
 // PartitionZFS wipes disk and creates a two-partition GPT layout for
 // ZFS installs:
 //

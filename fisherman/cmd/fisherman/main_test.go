@@ -7,9 +7,44 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tuna-os/fisherman/internal/install"
 	"github.com/tuna-os/fisherman/internal/post"
 	"github.com/tuna-os/fisherman/internal/recipe"
 )
+
+func TestAcceptSecureImagePinsOnlyInstallSource(t *testing.T) {
+	oldInspect, oldVerify := install.SkopeoInspectFn, install.CosignVerifyFn
+	t.Cleanup(func() { install.SkopeoInspectFn, install.CosignVerifyFn = oldInspect, oldVerify })
+	install.SkopeoInspectFn = func(_ ...string) ([]byte, error) {
+		return []byte(`{"Digest":"sha256:accepted","Labels":{"io.snosi.bootc.secureboot-capable":"true"}}`), nil
+	}
+	install.CosignVerifyFn = func(_, _ string) error { return nil }
+
+	r := &recipe.Recipe{
+		Image:        "ghcr.io/frostyard/cayo:20260729000000",
+		TargetImgref: "ghcr.io/frostyard/cayo:stable",
+		CosignPubKey: "/keys/cosign.pub",
+	}
+	if err := acceptSecureImage(r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Image != "ghcr.io/frostyard/cayo@sha256:accepted" {
+		t.Fatalf("image = %q", r.Image)
+	}
+	if r.TargetImgref != "ghcr.io/frostyard/cayo:stable" {
+		t.Fatalf("targetImgref = %q", r.TargetImgref)
+	}
+}
+
+func TestTargetImgrefForInstallKeepsGenericDedupAndSecureTrackingTag(t *testing.T) {
+	image := "ghcr.io/frostyard/cayo:stable"
+	if got := targetImgrefForInstall(&recipe.Recipe{Image: image, TargetImgref: image}); got != "" {
+		t.Fatalf("generic targetImgref = %q, want empty", got)
+	}
+	if got := targetImgrefForInstall(&recipe.Recipe{Image: "ghcr.io/frostyard/cayo@sha256:accepted", TargetImgref: image, SecureInstall: &recipe.SecureInstall{}}); got != image {
+		t.Fatalf("secure targetImgref = %q, want %q", got, image)
+	}
+}
 
 // TestExpandPath_AddsSbinDirs verifies that expandPath always ensures the
 // standard sbin directories are present in PATH even when pkexec has stripped
@@ -231,5 +266,49 @@ func TestCheckRequiredTools_SystemdCryptenrollNotCheckedForPlainLUKS(t *testing.
 	}
 	if err := checkRequiredTools(r); err != nil {
 		t.Errorf("systemd-cryptenroll should not be checked for luks-passphrase, got: %v", err)
+	}
+}
+
+func TestSecureRecoveryKeyValidatesExternalFileWithoutReadingSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "recovery")
+	if err := os.WriteFile(path, []byte("exact-recovery-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &recipe.Recipe{SecureInstall: &recipe.SecureInstall{RecoveryKeyFile: path}}
+	if err := validateSecureRecoveryKey(r); err != nil {
+		t.Fatalf("validateSecureRecoveryKey() = %v", err)
+	}
+}
+
+func TestCheckRequiredTools_SecureInstallRequiresArtifactAndEnrollmentTools(t *testing.T) {
+	orig := lookPath
+	t.Cleanup(func() { lookPath = orig })
+	for _, missing := range []string{"objcopy", "sbverify", "mokutil", "systemd-cryptenroll", "openssl", "blkid", "blockdev", "findmnt"} {
+		t.Run(missing, func(t *testing.T) {
+			lookPath = func(file string) (string, error) {
+				if file == missing {
+					return "", errors.New("not found")
+				}
+				return "/usr/bin/" + file, nil
+			}
+			r := &recipe.Recipe{Filesystem: "btrfs", Encryption: recipe.Encryption{Type: "luks-passphrase"}, SecureInstall: &recipe.SecureInstall{}}
+			if err := checkRequiredTools(r); err == nil || !strings.Contains(err.Error(), missing) {
+				t.Fatalf("missing %s was accepted: %v", missing, err)
+			}
+		})
+	}
+}
+
+func TestPartitionDiskUsesSecureDPSLayoutForEncryptedSecureRecipe(t *testing.T) {
+	r := &recipe.Recipe{SecureInstall: &recipe.SecureInstall{}, Filesystem: "btrfs", Disk: "/dev/test"}
+	called := false
+	old := partitionSecureSystemdBoot
+	partitionSecureSystemdBoot = func(string) error { called = true; return nil }
+	t.Cleanup(func() { partitionSecureSystemdBoot = old })
+	if err := partitionDisk(r, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("secure encrypted recipe did not select DPS systemd layout")
 	}
 }

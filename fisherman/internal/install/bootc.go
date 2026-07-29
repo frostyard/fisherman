@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/tuna-os/fisherman/internal/progress"
@@ -133,6 +134,15 @@ type Options struct {
 	// the install. Local sources (containers-storage:, oci:, ...) skip
 	// verification — their provenance was established at media build time.
 	CosignKeyPath string
+	// SecureInstall selects the explicit schema-1 Type #2 installation args.
+	// It must be set only after recipe and deployed-contract validation.
+	SecureInstall bool
+	// SecurePolicyPath is the restrictive containers policy used for the
+	// digest-pinned secure pull. Empty preserves generic Podman behavior.
+	SecurePolicyPath string
+	// SecureComposefsDigest receives the verified image storage digest before
+	// the transient pull store is removed.
+	SecureComposefsDigest *string
 }
 
 // scratchDir returns the host-side scratch directory from opts, falling back
@@ -156,6 +166,11 @@ const containerOCICachePath = "/run/fisherman/oci-cache"
 // or opts.Target in direct mode).
 func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []string {
 	args := []string{"install", "to-filesystem"}
+	if opts.SecureInstall {
+		// This prefix is a compatibility contract with bootc 1.16.3. Keep it
+		// byte-for-byte and do not add kernel arguments on this path.
+		args = append(args, "--composefs-backend", "--bootloader", "systemd", "--root-mount-spec", "")
+	}
 	if resolvedTargetImgref != "" {
 		args = append(args, "--target-imgref", resolvedTargetImgref)
 	}
@@ -163,7 +178,7 @@ func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []
 		args = append(args, "--disable-selinux")
 	}
 	// UnifiedStorage is intentionally not emitted — see Options.UnifiedStorage comment.
-	if opts.ComposeFsBackend {
+	if opts.ComposeFsBackend && !opts.SecureInstall {
 		args = append(args, "--composefs-backend")
 	}
 	// --source-imgref is required for composefs (raw OCI blobs), for
@@ -182,12 +197,26 @@ func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []
 		// at /usr/lib/containers/storage).  No network pull needed.
 		args = append(args, "--source-imgref", "containers-storage:"+bareImageRef(resolvedTargetImgref))
 	}
-	if opts.Bootloader != "" && opts.Bootloader != "grub2" {
+	if !opts.SecureInstall && opts.Bootloader != "" && opts.Bootloader != "grub2" {
 		args = append(args, "--bootloader", opts.Bootloader)
 	}
 	args = append(args, "--skip-finalize")
 	args = append(args, installTarget)
 	return args
+}
+
+var composefsDigest = regexp.MustCompile(`^[0-9a-f]{128}$`)
+
+// ValidComposefsDigest accepts the exact lower-hex storage identity produced
+// by bootc's composefs digest command.
+func ValidComposefsDigest(digest string) bool {
+	return composefsDigest.MatchString(digest)
+}
+
+// ShouldVerifySource preserves generic Cosign verification while preventing a
+// secure image already accepted by Fisherman from being resolved or verified again.
+func ShouldVerifySource(opts Options) bool {
+	return opts.CosignKeyPath != "" && !opts.SecureInstall
 }
 
 // selinuxActive reports whether the host kernel has the SELinux security module
@@ -356,7 +385,7 @@ func bootcViaContainer(opts Options) error {
 	// Verify the image signature and pin the source to the verified digest.
 	// This happens after targetImgref is resolved so the installed system
 	// still tracks the tag (not the digest) for day-2 updates.
-	if opts.CosignKeyPath != "" {
+	if ShouldVerifySource(opts) {
 		pinned, err := VerifyAndPinImage(opts.SourceImgref, opts.CosignKeyPath)
 		if err != nil {
 			return fmt.Errorf("verifying image signature: %w", err)
@@ -422,7 +451,7 @@ func bootcViaContainer(opts Options) error {
 		pullRoot, pullDriver = composefsRoot, composefsDriver
 	}
 	if opts.NeedsPull {
-		if err := pullImage(opts.SourceImgref, opts.LayerCount, pullRoot, pullDriver); err != nil {
+		if err := pullImage(opts.SourceImgref, opts.LayerCount, pullRoot, pullDriver, opts.SecurePolicyPath); err != nil {
 			return fmt.Errorf("pulling image: %w", err)
 		}
 	} else {
@@ -444,6 +473,13 @@ func bootcViaContainer(opts Options) error {
 		if err := exportComposefsOCIIfNeeded(opts, exportRef); err != nil {
 			return err
 		}
+	}
+	if opts.SecureInstall && opts.SecureComposefsDigest != nil {
+		digest, err := computeSecureComposefsDigest(opts.SourceImgref, composefsRoot, composefsDriver)
+		if err != nil {
+			return err
+		}
+		*opts.SecureComposefsDigest = digest
 	}
 
 	// The OCI layout is self-contained: drop the pulled store so the target
@@ -479,14 +515,14 @@ func bootcViaContainer(opts Options) error {
 			storageDriver = nonComposefsDriver
 		}
 
-			// Clear any previous podman database to avoid driver-mismatch errors;
-			// the early RemoveAll when nonComposefsRoot is set handles this for
-			// the non-composefs path, so only do it for composefs here.
-			if opts.ComposeFsBackend {
-				if err := os.RemoveAll(nonComposefsRoot); err != nil && !os.IsNotExist(err) {
-					progress.Substep(fmt.Sprintf("Warning: could not clear previous podman database: %v", err))
-				}
+		// Clear any previous podman database to avoid driver-mismatch errors;
+		// the early RemoveAll when nonComposefsRoot is set handles this for
+		// the non-composefs path, so only do it for composefs here.
+		if opts.ComposeFsBackend {
+			if err := os.RemoveAll(nonComposefsRoot); err != nil && !os.IsNotExist(err) {
+				progress.Substep(fmt.Sprintf("Warning: could not clear previous podman database: %v", err))
 			}
+		}
 
 		progress.Substep(fmt.Sprintf("Using %s storage driver with OCI layout", storageDriver))
 		podmanArgs = append(podmanArgs,
@@ -570,6 +606,24 @@ func bootcViaContainer(opts Options) error {
 	return nil
 }
 
+func computeSecureComposefsDigest(image, root, driver string) (string, error) {
+	args := []string{}
+	if root != "" {
+		args = append(args, "--root", root, "--storage-driver", driver)
+	}
+	args = append(args, "run", "--rm", "--pull=never", image,
+		"bootc", "container", "compute-composefs-digest-from-storage", image)
+	out, err := runner.Output("podman", args...)
+	if err != nil {
+		return "", fmt.Errorf("computing composefs digest from verified image storage: %w", err)
+	}
+	digest := strings.TrimSpace(string(out))
+	if !ValidComposefsDigest(digest) {
+		return "", fmt.Errorf("invalid composefs digest from verified image storage")
+	}
+	return digest, nil
+}
+
 // bootcDirect calls bootc install to-filesystem directly.
 // Only valid when fisherman is already running inside the bootc container image
 // (i.e. on the live ISO), where bootc auto-detects the source image.
@@ -633,7 +687,7 @@ func bootcToDiskViaContainer(opts Options, diskDevice, filesystem string) (effec
 	}
 
 	if opts.NeedsPull {
-		if err := pullImage(opts.SourceImgref, opts.LayerCount, "", ""); err != nil {
+		if err := pullImage(opts.SourceImgref, opts.LayerCount, "", "", opts.SecurePolicyPath); err != nil {
 			return "", fmt.Errorf("pulling image: %w", err)
 		}
 	} else {
@@ -1010,7 +1064,7 @@ func bootcToDiskDirect(opts Options, diskDevice, filesystem string) (string, err
 // avoiding "file does not exist" blob errors when CONFIG_OVERLAY_FS_REDIRECT_DIR
 // is set on the host kernel.
 // layerCount is the expected number of layers from CheckImage, used for progress.
-func pullImage(image string, layerCount int, root, storageDriver string) error {
+func pullImage(image string, layerCount int, root, storageDriver, policyPath string) error {
 	progress.Substep("Pulling container image")
 	if layerCount > 0 {
 		progress.Substep(fmt.Sprintf("Pulling image: %d layers to download", layerCount))
@@ -1022,6 +1076,9 @@ func pullImage(image string, layerCount int, root, storageDriver string) error {
 	}
 	if storageDriver != "" {
 		podmanArgs = append(podmanArgs, "--storage-driver", storageDriver)
+	}
+	if policyPath != "" {
+		podmanArgs = append(podmanArgs, "--signature-policy", policyPath)
 	}
 	podmanArgs = append(podmanArgs, "pull", image)
 	name, args := runner.HostArgs("podman", podmanArgs)

@@ -65,6 +65,22 @@ func TestVerifyAndPinImagePinsVerifiedDigest(t *testing.T) {
 	}
 }
 
+func TestVerifyAndPinImageKeepsVerifiedDigestPinned(t *testing.T) {
+	oldInspect, oldVerify := install.SkopeoInspectFn, install.CosignVerifyFn
+	t.Cleanup(func() { install.SkopeoInspectFn, install.CosignVerifyFn = oldInspect, oldVerify })
+	install.SkopeoInspectFn = func(_ ...string) ([]byte, error) {
+		t.Fatal("already pinned image must not be resolved through a tag")
+		return nil, nil
+	}
+	var verified string
+	install.CosignVerifyFn = func(image, _ string) error { verified = image; return nil }
+	const pinned = "ghcr.io/frostyard/cayo@sha256:verified"
+	got, err := install.VerifyAndPinImage(pinned, "/keys/cosign.pub")
+	if err != nil || got != pinned || verified != pinned {
+		t.Fatalf("VerifyAndPinImage() = %q, %q, %v", got, verified, err)
+	}
+}
+
 func TestVerifyAndPinImageFailsClosed(t *testing.T) {
 	install.SkopeoInspectFn = func(args ...string) ([]byte, error) {
 		return []byte(`{"Digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}`), nil
