@@ -211,28 +211,26 @@ func DefaultDeploymentDir(sysroot string) (string, error) {
 var DeploymentDirFn = DefaultDeploymentDir
 
 // isComposeFsNative reports whether the installed system at sysroot uses the
-// composefs-native backend.
+// composefs-native backend (bootc install to-filesystem --composefs-backend).
 //
-// Detection: ostree-based deployments create <sysroot>/ostree/deploy/<osname>/;
-// composefs-native (bootc) deployments create <sysroot>/ostree/bootc/ instead.
-// bootc also creates an empty ostree/deploy/ directory, so checking
-// for mere existence of ostree/deploy/ is insufficient. We check for
-// at least one subdirectory inside ostree/deploy/ (the OS name directory).
+// Detection is POSITIVE, via the composefs-native deploy base
+// <sysroot>/state/deploy/<hash>/ (the same path DefaultComposeFsDeployEtcDir
+// resolves against). The earlier heuristic keyed off "/ostree absent", but the
+// composefs-native backend ALSO creates an /ostree directory — so that check
+// mis-classified composefs-native installs as ostree. The concrete failure:
+// WriteHostname (and every other isComposeFsNative caller) then took the ostree
+// path, calling `ostree admin --print-current-dir`, which exits 1 on a
+// freshly-installed --skip-finalize target, and whose glob fallback over
+// /ostree/deploy/*/deploy/* finds nothing because the deployment is under
+// /state/ — a fatal `finding deployment dir` crash on composefs images.
 func isComposeFsNative(sysroot string) bool {
-	deployDir := filepath.Join(sysroot, "ostree", "deploy")
-	entries, err := os.ReadDir(deployDir)
-	if err != nil {
-		// No ostree/deploy/ at all — definitely composefs.
+	// Use ls via runner (not os.Stat), which runs in the host mount namespace
+	// rather than any sandbox. composefs-native ⟺ state/deploy exists.
+	if err := runner.Run("ls", filepath.Join(sysroot, "state", "deploy")); err == nil {
 		return true
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			// Found an OS name directory inside deploy/ — this is ostree.
-			return false
-		}
-	}
-	// ostree/deploy/ exists but is empty — composefs creates it empty.
-	return true
+	// Legacy signal retained: a deployment with no /ostree at all is composefs.
+	return runner.Run("ls", filepath.Join(sysroot, "ostree")) != nil
 }
 
 // IsComposeFsNativeExported is a public wrapper for isComposeFsNative,
@@ -565,13 +563,13 @@ func CopyBluetoothPairings(target string) error {
 	const src = "/var/lib/bluetooth"
 	info, err := os.Stat(src)
 	if err != nil || !info.IsDir() {
-		return nil // no bluetooth data — nothing to do
+		return nil //nolint:nilerr // no bluetooth data → nothing to do
 	}
 
 	// Check if the directory has any adapter subdirectories.
 	entries, err := os.ReadDir(src)
 	if err != nil || len(entries) == 0 {
-		return nil
+		return nil //nolint:nilerr // best-effort: absent/unreadable source → skip, continue
 	}
 
 	// Resolve the target /var/lib/bluetooth path (composefs-native vs ostree).
@@ -627,7 +625,6 @@ func CopyBluetoothPairings(target string) error {
 // and /run/NetworkManager/system-connections (used on live ISOs where the base
 // /etc is read-only, e.g. GnomeOS/bootc with composefs).
 func CopyWiFiConnections(target string) error {
-	// Collect .nmconnection files from all candidate source directories.
 	srcDirs := []string{
 		"/etc/NetworkManager/system-connections",
 		"/run/NetworkManager/system-connections",
@@ -644,11 +641,8 @@ func CopyWiFiConnections(target string) error {
 			continue
 		}
 		for _, e := range entries {
-			if !strings.HasSuffix(e.Name(), ".nmconnection") {
+			if !strings.HasSuffix(e.Name(), ".nmconnection") || seen[e.Name()] {
 				continue
-			}
-			if seen[e.Name()] {
-				continue // prefer /etc/ over /run/ if both have the same file
 			}
 			seen[e.Name()] = true
 			filesToCopy = append(filesToCopy, filepath.Join(srcDir, e.Name()))
@@ -707,7 +701,6 @@ func EnablePrintServices(target string) {
 	}
 	progress.Info("Print services enabled: cups-browsed, avahi-daemon, ipp-usb")
 }
-
 
 // AppendFstabEntry appends an fstab entry to the installed system at target.
 // Works for both composefs-native and ostree-based deployments.

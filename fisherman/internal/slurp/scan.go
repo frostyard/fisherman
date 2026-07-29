@@ -13,15 +13,15 @@ import (
 // ScanResult describes the Windows data available for migration on a disk.
 // Emitted as JSON by `fisherman scan <disk>` for the GUI to display.
 type ScanResult struct {
-	Disk       string        `json:"disk"`
+	Disk       string         `json:"disk"`
 	Partitions []NTFSPartScan `json:"partitions"`
 }
 
 // NTFSPartScan describes a single NTFS partition's available user data.
 type NTFSPartScan struct {
-	Partition string        `json:"partition"`
-	Users     []UserScan    `json:"users"`
-	TotalBytes int64        `json:"totalBytes"`
+	Partition  string     `json:"partition"`
+	Users      []UserScan `json:"users"`
+	TotalBytes int64      `json:"totalBytes"`
 }
 
 // UserScan describes one Windows user profile's available data.
@@ -34,7 +34,7 @@ type UserScan struct {
 // CategoryScan describes one data category (Documents, Pictures, etc.)
 type CategoryScan struct {
 	Name  string `json:"name"`
-	Path  string `json:"path"`  // relative to user profile
+	Path  string `json:"path"` // relative to user profile
 	Bytes int64  `json:"bytes"`
 	Count int    `json:"count"` // number of files
 }
@@ -118,7 +118,10 @@ func scanPartition(partition, mountPoint string) (*NTFSPartScan, error) {
 		}
 
 		profileDir := filepath.Join(usersDir, entry.Name())
-		userScan := scanUserProfile(entry.Name(), profileDir)
+		userScan, err := scanUserProfile(entry.Name(), profileDir)
+		if err != nil {
+			return nil, fmt.Errorf("scanning user profile %q: %w", entry.Name(), err)
+		}
 		if userScan.TotalBytes > 0 {
 			result.Users = append(result.Users, *userScan)
 			result.TotalBytes += userScan.TotalBytes
@@ -129,26 +132,37 @@ func scanPartition(partition, mountPoint string) (*NTFSPartScan, error) {
 }
 
 // scanUserProfile measures data in each category for one Windows user.
-func scanUserProfile(name, profileDir string) *UserScan {
+func scanUserProfile(name, profileDir string) (*UserScan, error) {
 	user := &UserScan{Name: name}
 
 	for _, cat := range userDataCategories {
 		catDir := filepath.Join(profileDir, cat.Path)
 		info, err := os.Stat(catDir)
-		if err != nil || !info.IsDir() {
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		if !info.IsDir() {
 			continue
 		}
 
 		var bytes int64
 		var count int
-		filepath.Walk(catDir, func(_ string, fi os.FileInfo, err error) error {
-			if err != nil || fi.IsDir() {
+		if err := filepath.Walk(catDir, func(_ string, fi os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if fi.IsDir() {
 				return nil
 			}
 			bytes += fi.Size()
 			count++
 			return nil
-		})
+		}); err != nil {
+			return nil, err
+		}
 
 		if bytes > 0 {
 			user.Categories = append(user.Categories, CategoryScan{
@@ -161,7 +175,7 @@ func scanUserProfile(name, profileDir string) *UserScan {
 		}
 	}
 
-	return user
+	return user, nil
 }
 
 // ScanJSON runs Scan and returns the result as a JSON string (for CLI output).

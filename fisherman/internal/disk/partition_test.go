@@ -307,6 +307,17 @@ func TestPartitionSystemdBoot_SfdiskScript(t *testing.T) {
 	}
 }
 
+func TestPartitionSecureSystemdBootUsesDPSRootGUID(t *testing.T) {
+	rec := setupRecorder(t)
+	if err := disk.PartitionSecureSystemdBoot("/dev/nvme0n1"); err != nil {
+		t.Fatalf("PartitionSecureSystemdBoot: %v", err)
+	}
+	script := sfdiskStdin(t, rec)
+	if !strings.Contains(script, "type="+disk.GPTPartTypeLinuxRootX86_64) {
+		t.Fatalf("secure systemd partition script lacks DPS x86-64 root GUID:\n%s", script)
+	}
+}
+
 // TestPartition_SfdiskArgs verifies the command-line arguments passed to sfdisk.
 func TestPartition_SfdiskArgs(t *testing.T) {
 	rec := setupRecorder(t)
@@ -423,6 +434,43 @@ func TestUnmountAll_AutomountedDisk(t *testing.T) {
 	wantArgs := []string{"unmount", "--no-user-interaction", "--block-device", "/dev/sda1"}
 	if !equalSlice(udisksCall.args, wantArgs) {
 		t.Errorf("udisksctl args = %v, want %v", udisksCall.args, wantArgs)
+	}
+}
+
+// TestUnmountAll_NBDSkipsFuser verifies that for a network block device
+// (/dev/nbd*, served by a userspace qemu-nbd process), fuser -km is NOT
+// called — killing the server would tear down the device and make sfdisk
+// fail with "cannot open /dev/nbd0: Invalid argument". Regression test for
+// the wootc VHDX-over-NBD partitioning failure.
+func TestUnmountAll_NBDSkipsFuser(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "mounts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close() // empty /proc/mounts — nothing mounted on the fresh NBD device
+	disk.SetProcMountsPath(f.Name())
+	t.Cleanup(func() { disk.SetProcMountsPath("/proc/mounts") })
+
+	rec := setupRecorder(t)
+
+	if err := disk.Partition("/dev/nbd0"); err != nil {
+		t.Fatalf("Partition: %v", err)
+	}
+
+	for _, c := range rec.calls {
+		if c.name == "fuser" {
+			t.Fatalf("fuser was called on /dev/nbd0 (args %v) — would kill the qemu-nbd server", c.args)
+		}
+	}
+	// sfdisk must still run.
+	sawSfdisk := false
+	for _, c := range rec.calls {
+		if c.name == "sfdisk" {
+			sawSfdisk = true
+		}
+	}
+	if !sawSfdisk {
+		t.Error("sfdisk not called for NBD device")
 	}
 }
 

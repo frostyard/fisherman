@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
+
+	"github.com/tuna-os/fisherman/internal/secure"
 )
 
 // Recipe describes a fisherman installation.
@@ -28,6 +31,15 @@ type Recipe struct {
 	// Works with any supported filesystem including xfs.
 	// Automatically forced to true when Filesystem is "zfs".
 	ComposeFsBackend bool `json:"composeFsBackend"`
+	// GenericImage passes --generic-image to bootc install to-filesystem, which
+	// skips the bootupd presence check (and host-specific EFI NVRAM writes).
+	// Set for ostree-based images that ship no bootupd (e.g. non-Fedora/EL bootc
+	// images like Arch/Debian): bootc otherwise aborts with "bootupd is required
+	// for ostree-based installs". Safe for wootc because Phase-2 boots via the
+	// signed shim+grub chain wootc stages on the ESP, not a bootc-installed
+	// bootloader. Left false for images that DO ship bootupd (bluefin, EL, Fedora)
+	// so their proven install path is unchanged.
+	GenericImage bool `json:"genericImage,omitempty"`
 	// ZFSPoolName is the name of the ZFS pool to create (default: "rpool").
 	// Only used when Filesystem is "zfs".
 	ZFSPoolName string `json:"zfsPoolName,omitempty"`
@@ -94,6 +106,9 @@ type Recipe struct {
 	// BrewTap is an optional Homebrew tap to add before installing OEM
 	// packages (e.g. "ublue-os/tap"). When empty, no tap is added.
 	BrewTap string `json:"brewTap,omitempty"`
+	// SecureInstall explicitly selects the Snosi schema-1 secure install path.
+	// It is never inferred from the image reference.
+	SecureInstall *SecureInstall `json:"secureInstall,omitempty"`
 }
 
 // UserSpec describes a user account to create during installation.
@@ -123,6 +138,19 @@ type VarDiskSpec struct {
 	KeepExisting bool   `json:"keepExisting"` // if true, mount as-is; if false, format XFS
 }
 
+// isSupportedMountFstype reports whether a customMount fstype is one
+// disk.formatPartition() can actually act on. Keep in sync with that switch:
+// the empty string and "unformatted" mean "mount, do not format", which is what
+// a pre-populated partition such as an existing ESP requires.
+func isSupportedMountFstype(fstype string) bool {
+	switch fstype {
+	case "", "unformatted", "swap", "fat32", "ext3", "ext4", "xfs", "btrfs":
+		return true
+	default:
+		return false
+	}
+}
+
 // CustomMount describes a single partition → mountpoint mapping for manual layouts.
 type CustomMount struct {
 	Partition string `json:"partition"` // e.g. "/dev/sda1"
@@ -134,6 +162,109 @@ type CustomMount struct {
 type Encryption struct {
 	Type       string `json:"type"`       // "none", "luks-passphrase", "tpm2-luks", "tpm2-luks-passphrase"
 	Passphrase string `json:"passphrase"` // required for luks-passphrase and tpm2-luks-passphrase
+}
+
+// SecureInstall configures the external recovery credential used by the
+// schema-1 secure-install path. The credential itself stays outside the recipe.
+type SecureInstall struct {
+	RecoveryKeyFile string `json:"recoveryKeyFile"`
+	MOKPasswordFile string `json:"mokPasswordFile"`
+}
+
+// secureRegistryRepository returns the registry repository for a plain image
+// reference. A target reference must include a tag; the install source may
+// instead already be immutable by digest.
+func secureRegistryRepository(reference string, requireTag bool) (string, error) {
+	if reference == "" || strings.Contains(reference, "://") || reference == "localhost" ||
+		strings.HasPrefix(reference, "localhost/") || strings.HasPrefix(reference, "localhost:") ||
+		strings.ContainsAny(reference, " \t\r\n") {
+		return "", fmt.Errorf("must be a bare registry reference")
+	}
+	if prefix, _, ok := strings.Cut(reference, ":"); ok {
+		switch prefix {
+		case "containers-storage", "oci", "oci-archive", "dir", "docker-archive":
+			return "", fmt.Errorf("must not use a local image transport")
+		}
+	}
+	if strings.Count(reference, "@") > 1 {
+		return "", fmt.Errorf("has an invalid digest separator")
+	}
+	name := reference
+	if repository, digest, ok := strings.Cut(reference, "@"); ok {
+		if requireTag || repository == "" || !validSHA256Digest(digest) {
+			return "", fmt.Errorf("has an invalid immutable digest")
+		}
+		name = repository
+	}
+	parts := strings.Split(name, "/")
+	for _, part := range parts {
+		if part == "" {
+			return "", fmt.Errorf("has an empty repository component")
+		}
+	}
+	if len(parts) > 0 && !validRegistryHost(parts[0]) {
+		return "", fmt.Errorf("has an invalid registry host or port")
+	}
+	last := parts[len(parts)-1]
+	colon := strings.LastIndex(last, ":")
+	if colon < 0 {
+		if requireTag {
+			return "", fmt.Errorf("must include a registry tag")
+		}
+		return name, nil
+	}
+	if colon == 0 || !validTag(last[colon+1:]) {
+		return "", fmt.Errorf("has an invalid registry tag")
+	}
+	parts[len(parts)-1] = last[:colon]
+	if parts[len(parts)-1] == "" {
+		return "", fmt.Errorf("has an empty repository component")
+	}
+	return strings.Join(parts, "/"), nil
+}
+
+func validSHA256Digest(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+64 {
+		return false
+	}
+	for _, c := range value[len("sha256:"):] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validRegistryHost(host string) bool {
+	if strings.Count(host, ":") > 1 {
+		return false
+	}
+	if name, port, ok := strings.Cut(host, ":"); ok {
+		if name == "" || port == "" {
+			return false
+		}
+		for _, c := range port {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validTag(tag string) bool {
+	if len(tag) == 0 || len(tag) > 128 {
+		return false
+	}
+	for i, c := range tag {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-' {
+			if i > 0 || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+				continue
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // Load reads and parses a recipe JSON file.
@@ -166,9 +297,33 @@ func (r *Recipe) Validate() error {
 			if cm.Target == "/" {
 				hasRoot = true
 			}
+			// Validate the fstype here, where it is cheap and non-destructive.
+			// disk.ApplyCustomLayout() only discovers an unsupported value once
+			// it reaches formatPartition() — by which point the caller may
+			// already have repartitioned a disk on the strength of this recipe
+			// validating. A caller passing "vfat" (the obvious spelling, and
+			// not one we accept) got exactly that: validation passed, the
+			// install died mid-flight.
+			if !isSupportedMountFstype(cm.Fstype) {
+				return fmt.Errorf("customMounts[%d]: unsupported fstype %q "+
+					"(supported: fat32, ext3, ext4, xfs, btrfs, swap, or "+
+					"\"unformatted\"/\"\" to mount without formatting)", i, cm.Fstype)
+			}
 		}
 		if !hasRoot {
 			return fmt.Errorf("customMounts: no root (/) partition specified")
+		}
+		// Encryption is NOT applied on the manual path: luksFormat/luksOpen run
+		// only in the auto-partition branch below, and TPM enrolment needs an
+		// activeRootPart that manual mode leaves empty. Accepting an encrypted
+		// manual recipe therefore produces an install that completes
+		// UNENCRYPTED while the caller believes otherwise — a security-boundary
+		// failure, so fail closed here rather than silently downgrade.
+		// (Same shape as the ZFS+LUKS rejection below.)
+		if r.Encryption.Type != "" && r.Encryption.Type != "none" {
+			return fmt.Errorf("encryption %q is not supported with customMounts: "+
+				"manual layouts do not run luksFormat, so the install would complete "+
+				"unencrypted", r.Encryption.Type)
 		}
 	} else {
 		if r.Disk == "" {
@@ -208,7 +363,7 @@ func (r *Recipe) Validate() error {
 	default:
 		return fmt.Errorf("encryption.type must be \"none\", \"luks-passphrase\", \"tpm2-luks\", or \"tpm2-luks-passphrase\"")
 	}
-	if (r.Encryption.Type == "luks-passphrase" || r.Encryption.Type == "tpm2-luks-passphrase") && r.Encryption.Passphrase == "" {
+	if (r.Encryption.Type == "luks-passphrase" || r.Encryption.Type == "tpm2-luks-passphrase") && r.Encryption.Passphrase == "" && r.SecureInstall == nil {
 		return fmt.Errorf("encryption.passphrase required for %s", r.Encryption.Type)
 	}
 	// image may be empty in live-ISO mode; bootc auto-detects the running container.
@@ -225,6 +380,61 @@ func (r *Recipe) Validate() error {
 	}
 	if r.Hostname == "" {
 		return fmt.Errorf("hostname is required")
+	}
+	if r.SecureInstall != nil {
+		if len(r.CustomMounts) != 0 {
+			return fmt.Errorf("secureInstall requires the fresh automatic disk layout")
+		}
+		if r.VarDisk != nil {
+			return fmt.Errorf("secureInstall does not support a separate /var disk")
+		}
+		if r.Filesystem != "btrfs" {
+			return fmt.Errorf("secureInstall requires filesystem=btrfs")
+		}
+		if !r.ComposeFsBackend {
+			return fmt.Errorf("secureInstall requires composeFsBackend=true")
+		}
+		if r.Bootloader != "systemd" {
+			return fmt.Errorf("secureInstall requires bootloader=systemd")
+		}
+		if r.Encryption.Type != "luks-passphrase" {
+			return fmt.Errorf("secureInstall requires encryption.type=luks-passphrase")
+		}
+		if r.Encryption.Passphrase != "" {
+			return fmt.Errorf("secureInstall requires recoveryKeyFile instead of encryption.passphrase")
+		}
+		if r.CosignPubKey == "" {
+			return fmt.Errorf("secureInstall requires cosignPubKey")
+		}
+		if _, err := os.Stat(r.CosignPubKey); err != nil {
+			return fmt.Errorf("secureInstall.cosignPubKey %s: %w", r.CosignPubKey, err)
+		}
+		if r.LuksMapperName != "" && r.LuksMapperName != "root" {
+			return fmt.Errorf("secureInstall requires luksMapperName=root")
+		}
+		if r.SecureInstall.RecoveryKeyFile == "" {
+			return fmt.Errorf("secureInstall.recoveryKeyFile is required")
+		}
+		if r.SecureInstall.MOKPasswordFile == "" {
+			return fmt.Errorf("secureInstall.mokPasswordFile is required")
+		}
+		sourceRepository, err := secureRegistryRepository(r.Image, false)
+		if err != nil {
+			return fmt.Errorf("secureInstall.image %q: %w", r.Image, err)
+		}
+		trackingRepository, err := secureRegistryRepository(r.TargetImgref, true)
+		if err != nil {
+			return fmt.Errorf("secureInstall.targetImgref %q: %w", r.TargetImgref, err)
+		}
+		if trackingRepository != sourceRepository {
+			return fmt.Errorf("secureInstall.targetImgref repository must exactly match image repository")
+		}
+		if err := secure.ValidatePrivateRegularFile(r.SecureInstall.RecoveryKeyFile); err != nil {
+			return fmt.Errorf("secureInstall.recoveryKeyFile %s: %w", r.SecureInstall.RecoveryKeyFile, err)
+		}
+		if err := secure.ValidatePrivateRegularFile(r.SecureInstall.MOKPasswordFile); err != nil {
+			return fmt.Errorf("secureInstall.mokPasswordFile %s: %w", r.SecureInstall.MOKPasswordFile, err)
+		}
 	}
 	return nil
 }

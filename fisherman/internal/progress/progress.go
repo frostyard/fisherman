@@ -39,6 +39,12 @@ type recoveryKeyEvent struct {
 	Key  string `json:"key"`
 }
 
+type secureEvent struct {
+	Type   string `json:"type"`
+	Action string `json:"action"`
+	Status string `json:"status"`
+}
+
 // Step emits a JSON step-progress line to stdout.
 // cumulativePct is the bar position (0–100) at the start of this step.
 // weightPct is the estimated share of total install time this step occupies.
@@ -82,6 +88,11 @@ func Complete(message, bootID string) {
 // Only emit when a random (non-user-chosen) passphrase is the sole fallback.
 func RecoveryKey(key string) {
 	write(recoveryKeyEvent{Type: "recovery_key", Key: key})
+}
+
+// Secure emits a non-secret secure-install lifecycle event for parent UIs.
+func Secure(action, status string) {
+	write(secureEvent{Type: "secure_install", Action: action, Status: status})
 }
 
 func write(v any) {

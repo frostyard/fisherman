@@ -7,36 +7,30 @@ import (
 	"testing"
 )
 
-func TestSelectStorageDriver_NonComposefs(t *testing.T) {
-	// Non-composefs also probes overlay now. If /tmp is on a safe filesystem (like ext4 in CI),
-	// it can resolve to overlay. If on an unsafe filesystem (like tmpfs), it falls back to vfs.
-	fsType, err := filesystemType("/tmp")
-	if err != nil {
-		t.Fatalf("could not detect filesystem type for /tmp: %v", err)
+func TestOverlaySafe_Decision(t *testing.T) {
+	// Deterministic: exercise the filesystem-type → driver decision directly,
+	// independent of the ambient fs type of any real path (/tmp is tmpfs on
+	// dev machines but ext4 on CI runners — which is why the old
+	// selectStorageDriver("/tmp") test was flaky).
+	cases := []struct {
+		fsType     string
+		wantDriver string
+	}{
+		{"tmpfs", "vfs"},     // unsafe: overlay-on-tmpfs
+		{"overlayfs", "vfs"}, // unsafe: overlay-on-overlay
+		{"ntfs", "vfs"},      // unknown: conservative
+		{"ext4", "overlay"},  // safe
+		{"xfs", "overlay"},   // safe
+		{"btrfs", "overlay"}, // safe
 	}
-
-	driver, reason := selectStorageDriver("/tmp")
-
-	unsafeFS := map[string]bool{
-		"overlayfs": true,
-		"tmpfs":     true,
-	}
-	knownSafeFS := map[string]bool{
-		"ext4":  true,
-		"xfs":   true,
-		"btrfs": true,
-	}
-
-	if unsafeFS[fsType] || !knownSafeFS[fsType] {
-		if driver != "vfs" {
-			t.Errorf("driver on unsafe/unknown FS %q = %q, want vfs", fsType, driver)
+	for _, c := range cases {
+		got := overlaySafe(c.fsType)
+		if got.driver != c.wantDriver {
+			t.Errorf("overlaySafe(%q).driver = %q, want %q", c.fsType, got.driver, c.wantDriver)
 		}
-	} else {
-		t.Logf("driver on safe FS %q = %q (%s)", fsType, driver, reason)
-	}
-
-	if reason == "" {
-		t.Error("non-composefs reason should not be empty")
+		if got.reason == "" && got.driver == "vfs" {
+			t.Errorf("overlaySafe(%q): vfs fallback needs a reason", c.fsType)
+		}
 	}
 }
 

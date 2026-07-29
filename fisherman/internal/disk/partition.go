@@ -161,6 +161,18 @@ func PartitionSystemdBoot(disk string) error {
 	return partition(disk, script)
 }
 
+// PartitionSecureSystemdBoot creates the schema-1 systemd-boot layout with a
+// DPS x86-64 root partition. The root is subsequently formatted as LUKS2.
+func PartitionSecureSystemdBoot(disk string) error {
+	script := strings.Join([]string{
+		"label: gpt",
+		"",
+		`size=2GiB, type=uefi, name="EFI-SYSTEM"`,
+		`type=4f68bce3-e8cd-4db1-96e7-fbcaf984b709, name="root"`,
+	}, "\n") + "\n"
+	return partition(disk, script)
+}
+
 // PartitionZFS wipes disk and creates a two-partition GPT layout for
 // ZFS installs:
 //
@@ -391,8 +403,19 @@ func unmountAll(disk string) error {
 
 	// Kill any processes still holding FDs open on any partition of this disk.
 	// fuser exits non-zero when no processes are found — that is fine.
-	fmt.Fprintf(os.Stdout, "+ fuser -km %s (kill remaining holders)\n", disk)
-	_ = runner.Run("fuser", "-km", disk)
+	//
+	// EXCEPTION: network block devices (/dev/nbd*) are served by a userspace
+	// process (qemu-nbd --connect) that holds the device open by design.
+	// fuser -km would SIGKILL that server, tearing down the connection and
+	// leaving sfdisk with "cannot open /dev/nbd0: Invalid argument". A
+	// freshly attached NBD device has no stale holders to evict anyway, so
+	// skip the kill entirely for it.
+	if isNBD(disk) {
+		fmt.Fprintf(os.Stdout, "+ skipping fuser -km on %s (NBD server must survive)\n", disk)
+	} else {
+		fmt.Fprintf(os.Stdout, "+ fuser -km %s (kill remaining holders)\n", disk)
+		_ = runner.Run("fuser", "-km", disk)
+	}
 
 	// Flush pending I/O so the kernel can drop its internal references.
 	_ = runner.Run("blockdev", "--flushbufs", disk)
@@ -400,6 +423,12 @@ func unmountAll(disk string) error {
 	// Give udev and udisksd time to release all device references.
 	_ = runner.Run("udevadm", "settle")
 	return nil
+}
+
+// isNBD reports whether disk is a network block device (/dev/nbd*),
+// which is served by a userspace qemu-nbd process that must not be killed.
+func isNBD(disk string) bool {
+	return strings.HasPrefix(filepath.Base(disk), "nbd")
 }
 
 // deactivateLVM removes LVM volume groups and device-mapper (dm-crypt, LUKS)
