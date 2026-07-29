@@ -564,13 +564,25 @@ func flatpakList(installFlag, typeFilter string) []string {
 func CopyBluetoothPairings(target string) error {
 	const src = "/var/lib/bluetooth"
 	info, err := os.Stat(src)
-	if err != nil || !info.IsDir() {
-		return nil // no bluetooth data — nothing to do
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // no bluetooth data — nothing to do
+		}
+		return fmt.Errorf("checking Bluetooth pairings: %w", err)
+	}
+	if !info.IsDir() {
+		return nil
 	}
 
 	// Check if the directory has any adapter subdirectories.
 	entries, err := os.ReadDir(src)
-	if err != nil || len(entries) == 0 {
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading Bluetooth pairings: %w", err)
+	}
+	if len(entries) == 0 {
 		return nil
 	}
 
@@ -707,7 +719,6 @@ func EnablePrintServices(target string) {
 	}
 	progress.Info("Print services enabled: cups-browsed, avahi-daemon, ipp-usb")
 }
-
 
 // AppendFstabEntry appends an fstab entry to the installed system at target.
 // Works for both composefs-native and ostree-based deployments.

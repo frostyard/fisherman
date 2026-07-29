@@ -143,7 +143,10 @@ func ExtractWallpapers(ntfsPartition string) (*WallpaperResult, error) {
 	if result.Count > 0 {
 		result.Found = true
 		result.ScratchDir = wallpaperDir
-		result.TotalBytes = dirSize(wallpaperDir)
+		result.TotalBytes, err = dirSize(wallpaperDir)
+		if err != nil {
+			return result, fmt.Errorf("measuring extracted wallpapers: %w", err)
+		}
 		progress.Substep(fmt.Sprintf("Extracted %d wallpaper(s) (%s)", result.Count, humanBytes(result.TotalBytes)))
 	}
 
@@ -324,10 +327,10 @@ func InjectWallpapers(target string, slurpResult *WallpaperResult, composeFsNati
 // adduser copies /etc/skel/ into the new home directory). This is the only
 // reliable approach when no user exists yet at install time.
 // Thumbnails are also written directly into any existing user home directories.
-func GenerateSystemThumbnails(target string, composeFsNative bool) int {
+func GenerateSystemThumbnails(target string, composeFsNative bool) (int, error) {
 	thumbnailer := detectThumbnailer()
 	if thumbnailer == "" {
-		return 0
+		return 0, nil
 	}
 
 	// Collect candidate thumbnail cache directories:
@@ -351,9 +354,10 @@ func GenerateSystemThumbnails(target string, composeFsNative bool) int {
 		etcBase = filepath.Join(target, "etc")
 	}
 	skelCache := filepath.Join(etcBase, "skel", ".cache", "thumbnails", "large")
-	if err := os.MkdirAll(skelCache, 0o700); err == nil {
-		cacheDirs = append(cacheDirs, skelCache)
+	if err := os.MkdirAll(skelCache, 0o700); err != nil {
+		return 0, fmt.Errorf("creating skeleton thumbnail cache: %w", err)
 	}
+	cacheDirs = append(cacheDirs, skelCache)
 
 	// Secondary: existing user homes.
 	var homeBase string
@@ -362,20 +366,25 @@ func GenerateSystemThumbnails(target string, composeFsNative bool) int {
 	} else {
 		homeBase = filepath.Join(target, "var", "home")
 	}
-	if homeDirEntries, err := os.ReadDir(homeBase); err == nil {
+	homeDirEntries, err := os.ReadDir(homeBase)
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("reading user homes: %w", err)
+	}
+	if err == nil {
 		for _, e := range homeDirEntries {
 			if !e.IsDir() {
 				continue
 			}
 			userCache := filepath.Join(homeBase, e.Name(), ".cache", "thumbnails", "large")
-			if err := os.MkdirAll(userCache, 0o700); err == nil {
-				cacheDirs = append(cacheDirs, userCache)
+			if err := os.MkdirAll(userCache, 0o700); err != nil {
+				return 0, fmt.Errorf("creating thumbnail cache for %q: %w", e.Name(), err)
 			}
+			cacheDirs = append(cacheDirs, userCache)
 		}
 	}
 
 	if len(cacheDirs) == 0 {
-		return 0
+		return 0, nil
 	}
 
 	// Directories to scan for wallpapers (on the mounted target filesystem).
@@ -388,11 +397,17 @@ func GenerateSystemThumbnails(target string, composeFsNative bool) int {
 	count := 0
 	for _, dir := range scanDirs {
 		if _, err := os.Stat(dir); err != nil {
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return count, fmt.Errorf("checking wallpaper directory %s: %w", dir, err)
 		}
 
-		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
+		if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
 				return nil
 			}
 			// Skip tiny files and non-images
@@ -408,7 +423,7 @@ func GenerateSystemThumbnails(target string, composeFsNative bool) int {
 			var installedPath string
 			relToTarget, err := filepath.Rel(target, path)
 			if err != nil {
-				return nil
+				return err
 			}
 			installedPath = "/" + relToTarget
 
@@ -426,14 +441,16 @@ func GenerateSystemThumbnails(target string, composeFsNative bool) int {
 				}
 			}
 			return nil
-		})
+		}); err != nil {
+			return count, fmt.Errorf("scanning wallpaper directory %s: %w", dir, err)
+		}
 	}
 
 	// Fix ownership: skel thumbnails owned by root (correct); user home
 	// caches owned by the home's owner. The cache dirs were pre-created above
 	// as root, so this must run even when zero thumbnails were generated —
 	// otherwise a fresh home is left with a root-owned ~/.cache.
-	if homeDirEntries, err := os.ReadDir(homeBase); err == nil {
+	if err == nil {
 		for _, e := range homeDirEntries {
 			if !e.IsDir() {
 				continue
@@ -456,7 +473,7 @@ func GenerateSystemThumbnails(target string, composeFsNative bool) int {
 		}
 	}
 
-	return count
+	return count, nil
 }
 
 // detectThumbnailer returns the command to use for thumbnail generation.
@@ -507,16 +524,19 @@ func CleanupScratch() {
 }
 
 // dirSize returns total bytes of all files under a directory.
-func dirSize(path string) int64 {
+func dirSize(path string) (int64, error) {
 	var total int64
-	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
 			return nil
 		}
 		total += info.Size()
 		return nil
 	})
-	return total
+	return total, err
 }
 
 func humanBytes(b int64) string {

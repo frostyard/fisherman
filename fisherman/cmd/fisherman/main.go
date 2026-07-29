@@ -1013,7 +1013,10 @@ func main() {
 	{
 		composefs := post.IsComposeFsNativeExported(activeTargetMount)
 		progress.Substep("Pre-generating wallpaper thumbnails")
-		n := slurp.GenerateSystemThumbnails(activeTargetMount, composefs)
+		n, err := slurp.GenerateSystemThumbnails(activeTargetMount, composefs)
+		if err != nil {
+			progress.Info(fmt.Sprintf("Warning: could not generate wallpaper thumbnails: %v", err))
+		}
 		if n > 0 {
 			progress.Info(fmt.Sprintf("Pre-generated %d wallpaper thumbnail(s)", n))
 		}

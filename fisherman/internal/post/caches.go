@@ -160,7 +160,10 @@ func warmIconCache(target string) error {
 	iconsDir := filepath.Join(target, "usr", "share", "icons")
 	entries, err := os.ReadDir(iconsDir)
 	if err != nil {
-		return nil // no icons dir, skip
+		if os.IsNotExist(err) {
+			return nil // no icons dir, skip
+		}
+		return err
 	}
 
 	for _, entry := range entries {
@@ -169,8 +172,11 @@ func warmIconCache(target string) error {
 		}
 		themeDir := filepath.Join(iconsDir, entry.Name())
 		indexFile := filepath.Join(themeDir, "index.theme")
-		if _, err := os.Stat(indexFile); os.IsNotExist(err) {
-			continue // not a real theme
+		if _, err := os.Stat(indexFile); err != nil {
+			if os.IsNotExist(err) {
+				continue // not a real theme
+			}
+			return err
 		}
 
 		// Try gtk4-update-icon-cache first, fall back to gtk-update-icon-cache
@@ -185,8 +191,11 @@ func warmIconCache(target string) error {
 // warmGSettingsSchemas compiles GSettings schemas.
 func warmGSettingsSchemas(target string) error {
 	schemasDir := filepath.Join(target, "usr", "share", "glib-2.0", "schemas")
-	if _, err := os.Stat(schemasDir); os.IsNotExist(err) {
-		return nil
+	if _, err := os.Stat(schemasDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	return Exec.Command("glib-compile-schemas", schemasDir).Run()
 }
@@ -195,10 +204,16 @@ func warmGSettingsSchemas(target string) error {
 func warmPixbufLoaders(target string) error {
 	// The cache file location varies; try the standard path
 	loaderDir := filepath.Join(target, "usr", "lib64", "gdk-pixbuf-2.0", "2.10.0")
-	if _, err := os.Stat(loaderDir); os.IsNotExist(err) {
+	if _, err := os.Stat(loaderDir); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
 		loaderDir = filepath.Join(target, "usr", "lib", "gdk-pixbuf-2.0", "2.10.0")
-		if _, err := os.Stat(loaderDir); os.IsNotExist(err) {
-			return nil
+		if _, err := os.Stat(loaderDir); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
 		}
 	}
 
@@ -215,10 +230,16 @@ func warmPixbufLoaders(target string) error {
 // warmGIOModules regenerates the GIO modules cache.
 func warmGIOModules(target string) error {
 	modulesDir := filepath.Join(target, "usr", "lib64", "gio", "modules")
-	if _, err := os.Stat(modulesDir); os.IsNotExist(err) {
+	if _, err := os.Stat(modulesDir); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
 		modulesDir = filepath.Join(target, "usr", "lib", "gio", "modules")
-		if _, err := os.Stat(modulesDir); os.IsNotExist(err) {
-			return nil
+		if _, err := os.Stat(modulesDir); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
 		}
 	}
 	return Exec.Command("gio-querymodules", modulesDir).Run()
@@ -233,8 +254,11 @@ func warmLdconfig(target string) error {
 // warmManDB regenerates the man page index.
 func warmManDB(target string) error {
 	manDir := filepath.Join(target, "usr", "share", "man")
-	if _, err := os.Stat(manDir); os.IsNotExist(err) {
-		return nil
+	if _, err := os.Stat(manDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	// mandb with --no-purge to avoid removing valid entries
 	return Exec.Command("mandb", "--no-purge", "-q", "--manpath", manDir).Run()

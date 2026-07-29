@@ -102,8 +102,11 @@ func ExtractData(config *SlurpConfig) (*DataSlurpResult, error) {
 	for _, userCfg := range config.Users {
 		profileDir := filepath.Join(usersDir, userCfg.Name)
 		if _, err := os.Stat(profileDir); err != nil {
-			progress.Info(fmt.Sprintf("Warning: user profile %q not found, skipping", userCfg.Name))
-			continue
+			if os.IsNotExist(err) {
+				progress.Info(fmt.Sprintf("Warning: user profile %q not found, skipping", userCfg.Name))
+				continue
+			}
+			return nil, fmt.Errorf("checking user profile %q: %w", userCfg.Name, err)
 		}
 
 		userResult := SlurpUserResult{Name: userCfg.Name}
@@ -117,18 +120,24 @@ func ExtractData(config *SlurpConfig) (*DataSlurpResult, error) {
 
 			srcDir := filepath.Join(profileDir, catPath)
 			if _, err := os.Stat(srcDir); err != nil {
-				continue
+				if os.IsNotExist(err) {
+					continue
+				}
+				return nil, fmt.Errorf("checking %s for user %q: %w", catName, userCfg.Name, err)
 			}
 
 			dstDir := filepath.Join(userScratch, catName)
 			if err := os.MkdirAll(dstDir, 0o755); err != nil {
-				continue
+				return nil, fmt.Errorf("creating destination for %s/%s: %w", userCfg.Name, catName, err)
 			}
 
 			progress.Substep(fmt.Sprintf("Copying %s/%s", userCfg.Name, catName))
 
 			catResult := SlurpCategoryResult{Name: catName}
-			copied, count := streamCategory(srcDir, dstDir, budget-totalCopied)
+			copied, count, err := streamCategory(srcDir, dstDir, budget-totalCopied)
+			if err != nil {
+				return nil, fmt.Errorf("copying %s/%s: %w", userCfg.Name, catName, err)
+			}
 			catResult.Bytes = copied
 			catResult.Count = count
 			totalCopied += copied
@@ -162,13 +171,16 @@ func ExtractData(config *SlurpConfig) (*DataSlurpResult, error) {
 }
 
 // streamCategory copies files from srcDir to dstDir, respecting a byte budget.
-// Returns total bytes copied and file count.
-func streamCategory(srcDir, dstDir string, budget int64) (int64, int) {
+// Returns total bytes copied, file count, and any traversal or copy error.
+func streamCategory(srcDir, dstDir string, budget int64) (int64, int, error) {
 	var totalBytes int64
 	var count int
 
-	filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
 			return nil
 		}
 		// Skip hidden/system files
@@ -187,21 +199,21 @@ func streamCategory(srcDir, dstDir string, budget int64) (int64, int) {
 
 		relPath, err := filepath.Rel(srcDir, path)
 		if err != nil {
-			return nil
+			return err
 		}
 
 		dstPath := filepath.Join(dstDir, relPath)
 		dstParent := filepath.Dir(dstPath)
 		if err := os.MkdirAll(dstParent, 0o755); err != nil {
-			return nil
+			return err
 		}
 
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil
+			return err
 		}
 		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
-			return nil
+			return err
 		}
 
 		totalBytes += info.Size()
@@ -209,7 +221,7 @@ func streamCategory(srcDir, dstDir string, budget int64) (int64, int) {
 		return nil
 	})
 
-	return totalBytes, count
+	return totalBytes, count, err
 }
 
 // InjectData copies slurped user data from scratch into the installed system's

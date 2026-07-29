@@ -162,7 +162,10 @@ func TestDirSize(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "a.txt"), make([]byte, 100), 0644)
 	os.WriteFile(filepath.Join(dir, "b.txt"), make([]byte, 200), 0644)
 
-	size := dirSize(dir)
+	size, err := dirSize(dir)
+	if err != nil {
+		t.Fatalf("dirSize() error: %v", err)
+	}
 	if size != 300 {
 		t.Errorf("expected 300 bytes, got %d", size)
 	}
@@ -249,7 +252,10 @@ func TestGenerateSystemThumbnails_ChownsUserCacheWithoutWallpapers(t *testing.T)
 		t.Fatal(err)
 	}
 
-	n := GenerateSystemThumbnails(target, true)
+	n, err := GenerateSystemThumbnails(target, true)
+	if err != nil {
+		t.Fatalf("GenerateSystemThumbnails() error: %v", err)
+	}
 	if n != 0 {
 		t.Fatalf("expected 0 thumbnails, got %d", n)
 	}

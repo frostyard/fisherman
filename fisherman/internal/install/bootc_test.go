@@ -543,8 +543,9 @@ func TestInjectStorageTmpDir(t *testing.T) {
 		conf := ""
 		result := install.InjectStorageTmpDir(conf, newLine)
 		// No [storage] section → nothing to inject, just return unchanged.
-		// The fallback path in writeStorageConfWithTmpDir handles this.
-		_ = result // just must not panic
+		if result != conf {
+			t.Errorf("empty config changed: %q", result)
+		}
 	})
 }
 
