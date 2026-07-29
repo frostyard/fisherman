@@ -14,22 +14,30 @@ func TestComputeSecureComposefsDigest(t *testing.T) {
 	const image = "ghcr.io/frostyard/cayo@sha256:verified"
 	valid := strings.Repeat("a", 128)
 	runner.OutputFn = func(name string, args ...string) ([]byte, error) {
-		want := []string{"--root", "/store", "--storage-driver", "overlay", "run", "--rm", "--pull=never", image, "bootc", "container", "compute-composefs-digest-from-storage", image}
+		want := []string{"--root", "/store", "--runroot", "/runstore", "--storage-driver", "overlay", "run", "--rm", "--pull=never", image, "bootc", "container", "compute-composefs-digest-from-storage", image}
 		if name != "podman" || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 			t.Fatalf("command = %s %q", name, args)
 		}
 		return []byte(valid + "\n"), nil
 	}
-	if got, err := computeSecureComposefsDigest(image, "/store", "overlay"); err != nil || got != valid {
+	if got, err := computeSecureComposefsDigest(image, "/store", "/runstore", "overlay"); err != nil || got != valid {
 		t.Fatalf("digest = %q, %v", got, err)
 	}
 
 	runner.OutputFn = func(_ string, _ ...string) ([]byte, error) { return []byte("bad\n"), nil }
-	if _, err := computeSecureComposefsDigest(image, "/store", "overlay"); err == nil {
+	if _, err := computeSecureComposefsDigest(image, "/store", "/runstore", "overlay"); err == nil {
 		t.Fatal("malformed digest accepted")
 	}
 	runner.OutputFn = func(_ string, _ ...string) ([]byte, error) { return nil, errors.New("podman failed") }
-	if _, err := computeSecureComposefsDigest(image, "/store", "overlay"); err == nil {
+	if _, err := computeSecureComposefsDigest(image, "/store", "/runstore", "overlay"); err == nil {
 		t.Fatal("command failure accepted")
+	}
+}
+
+func TestPodmanPullArgsIncludeSecurePolicyAndRedirectedStore(t *testing.T) {
+	got := podmanPullArgs("ghcr.io/frostyard/cayo@sha256:verified", "/store", "/runstore", "overlay", "/policy.json")
+	want := []string{"--root", "/store", "--runroot", "/runstore", "--storage-driver", "overlay", "--signature-policy", "/policy.json", "pull", "ghcr.io/frostyard/cayo@sha256:verified"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("pull args = %q, want %q", got, want)
 	}
 }

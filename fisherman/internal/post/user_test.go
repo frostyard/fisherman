@@ -1,243 +1,171 @@
-package post_test
+package post
 
 import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/tuna-os/fisherman/internal/post"
 	"github.com/tuna-os/fisherman/internal/runner"
 )
 
-// captureRuns replaces runner.RunFn with a recorder and restores it on cleanup.
-func captureRuns(t *testing.T) *[][]string {
-	t.Helper()
-	var calls [][]string
-	runner.RunFn = func(stdin io.Reader, name string, args ...string) error {
-		calls = append(calls, append([]string{name}, args...))
-		return nil
-	}
-	t.Cleanup(func() { runner.RunFn = runner.DefaultRun })
-	return &calls
-}
-
-func writeFile(t *testing.T, path, content string, mode os.FileMode) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(content), mode); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// composefsRoot builds a composefs-native sysroot: a state/deploy/<hash>
-// dir whose etc/ is a pristine copy of the image /etc (as written by
-// bootc's composefs backend), plus the shared var. ComposeFsDeployEtcDirFn
-// is overridden to resolve it, mirroring production behaviour.
-func composefsRoot(t *testing.T) (sysroot, stateDir string) {
-	t.Helper()
-	sysroot = t.TempDir()
-	stateDir = filepath.Join(sysroot, "state", "deploy", "abc123")
-
-	// Pristine etc copy: passwd already contains the created user because
-	// useradd is mocked in these tests.
-	writeFile(t, filepath.Join(stateDir, "etc", "passwd"),
-		"root:x:0:0:root:/root:/usr/bin/bash\n"+
-			"alice:x:1000:1000:Alice:/var/home/alice:/usr/bin/bash\n", 0o644)
-	writeFile(t, filepath.Join(stateDir, "etc", "shells"),
-		"# /etc/shells: valid login shells\n/bin/bash\n/usr/bin/bash\n/usr/bin/sh\n", 0o644)
-	writeFile(t, filepath.Join(stateDir, "etc", "skel", ".bashrc"), "# skel\n", 0o644)
-
-	// Shared var plus the deployment's relative var symlink, as laid out by
-	// write_composefs_state.
-	sharedVar := filepath.Join(sysroot, "state", "os", "default", "var")
-	if err := os.MkdirAll(sharedVar, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("../../os/default/var", filepath.Join(stateDir, "var")); err != nil {
-		t.Fatal(err)
-	}
-
-	post.ComposeFsDeployEtcDirFn = func(target string) (string, error) {
-		return filepath.Join(stateDir, "etc"), nil
-	}
-	t.Cleanup(func() { post.ComposeFsDeployEtcDirFn = post.DefaultComposeFsDeployEtcDir })
-	return sysroot, stateDir
-}
-
-// ostreeRoot builds an ostree/bootc sysroot with a deployment dir containing
-// a full tree (executable shells present on disk).
-func ostreeRoot(t *testing.T, shells ...string) (sysroot, deployDir string) {
-	t.Helper()
-	sysroot = t.TempDir()
-	deployDir = filepath.Join(sysroot, "ostree", "deploy", "default", "deploy", "hash.0")
-	// An OS-name dir under ostree/deploy marks the sysroot as ostree-based.
+// On ostree targets, useradd --create-home resolves the deployment's
+// /home -> var/home symlink and creates the home inside the DEPLOYMENT's
+// var — masked at runtime by the stateroot var mount. CreateUser must
+// relocate it into the stateroot var and write a tmpfiles.d snippet so
+// first boot recreates/relabels it (wootc E2E run 20260723T0423: passwd
+// had the user, the booted var/home had nothing).
+func TestCreateUserRelocatesHomeToStaterootVar(t *testing.T) {
+	sysroot := t.TempDir()
+	deployDir := filepath.Join(sysroot, "ostree", "deploy", "default", "deploy", "abc123.0")
 	if err := os.MkdirAll(deployDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range shells {
-		writeFile(t, filepath.Join(deployDir, s), "#!/bin/sh\n", 0o755)
+
+	origDeployFn := DeploymentDirFn
+	defer func() { DeploymentDirFn = origDeployFn }()
+	DeploymentDirFn = func(string) (string, error) { return deployDir, nil }
+
+	var calls [][]string
+	origRunFn := runner.RunFn
+	defer func() { runner.RunFn = origRunFn }()
+	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		switch name {
+		case "ls":
+			if _, err := os.Stat(args[len(args)-1]); err != nil {
+				return err
+			}
+			return nil
+		case "mkdir":
+			return os.MkdirAll(args[len(args)-1], 0o755)
+		case "chroot":
+			if len(args) > 1 && args[1] == "useradd" {
+				// Simulate the real symlink-following behavior: the home
+				// lands in the deployment's own var/home.
+				return os.MkdirAll(filepath.Join(deployDir, "var", "home", "alice"), 0o700)
+			}
+			return nil
+		case "mv":
+			return os.Rename(args[len(args)-2], args[len(args)-1])
+		}
+		return nil
 	}
-	post.DeploymentDirFn = func(target string) (string, error) { return deployDir, nil }
-	t.Cleanup(func() { post.DeploymentDirFn = post.DefaultDeploymentDir })
-	return sysroot, deployDir
+
+	if err := CreateUser(sysroot, UserConfig{Username: "alice"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	stateHome := filepath.Join(sysroot, "ostree", "deploy", "default", "var", "home", "alice")
+	if _, err := os.Stat(stateHome); err != nil {
+		t.Errorf("home not relocated to stateroot var: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(deployDir, "var", "home", "alice")); !os.IsNotExist(err) {
+		t.Error("orphaned home still present in deployment var")
+	}
+
+	snippet, err := os.ReadFile(filepath.Join(deployDir, "etc", "tmpfiles.d", "fisherman-home-alice.conf"))
+	if err != nil {
+		t.Fatalf("tmpfiles snippet missing: %v", err)
+	}
+	for _, want := range []string{
+		"C /var/home/alice 0700 alice alice - /etc/skel",
+		"Z /var/home/alice - alice alice -",
+	} {
+		if !strings.Contains(string(snippet), want) {
+			t.Errorf("tmpfiles snippet missing %q; got:\n%s", want, snippet)
+		}
+	}
 }
 
-// findCall returns the first recorded invocation of name, or nil.
-func findCall(calls [][]string, name string) []string {
+// useradd --root from a booted host initializes the host PAM/SELinux stack
+// and fails against a writable target etc (wootc run 20260723T0738). User
+// tooling must run via chroot with the target's own binaries.
+func TestCreateUserUsesChrootNotRootFlag(t *testing.T) {
+	sysroot := t.TempDir()
+	deployDir := filepath.Join(sysroot, "ostree", "deploy", "default", "deploy", "abc123.0")
+	if err := os.MkdirAll(deployDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origDeployFn := DeploymentDirFn
+	defer func() { DeploymentDirFn = origDeployFn }()
+	DeploymentDirFn = func(string) (string, error) { return deployDir, nil }
+
+	var calls [][]string
+	origRunFn := runner.RunFn
+	defer func() { runner.RunFn = origRunFn }()
+	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		if name == "ls" {
+			if _, err := os.Stat(args[len(args)-1]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := CreateUser(sysroot, UserConfig{Username: "bob", Password: "$6$salt$hash"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	var sawUseradd, sawChpasswd bool
 	for _, c := range calls {
-		if c[0] == name {
-			return c
+		if c[0] == "useradd" || c[0] == "chpasswd" {
+			t.Errorf("direct %s call (must go through chroot): %v", c[0], c)
+		}
+		if c[0] == "chroot" && len(c) > 2 && c[2] == "useradd" {
+			sawUseradd = true
+		}
+		if c[0] == "chroot" && len(c) > 2 && c[2] == "chpasswd" && c[3] == "-e" {
+			sawChpasswd = true
 		}
 	}
-	return nil
+	if !sawUseradd || !sawChpasswd {
+		t.Errorf("missing chroot useradd/chpasswd calls: %v", calls)
+	}
 }
 
-// argAfter returns the argument following flag in call, or "".
-func argAfter(call []string, flag string) string {
-	for i, a := range call {
-		if a == flag && i+1 < len(call) {
-			return call[i+1]
+// composefs-native has no chrootable rootfs during deploy — useradd must run
+// with --root (not chroot), pointed at the deploy root (parent of the
+// state/deploy/<hash>/etc dir). dakota exit-127 regression, GH 20260724T1508.
+func TestCreateUserComposeFsUsesRootFlag(t *testing.T) {
+	sysroot := t.TempDir()
+	etcDir := filepath.Join(sysroot, "state", "deploy", "abc123", "etc")
+	if err := os.MkdirAll(etcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// isComposeFsNative keys off state/deploy existing (via the ls stub below).
+	origEtcFn := ComposeFsDeployEtcDirFn
+	defer func() { ComposeFsDeployEtcDirFn = origEtcFn }()
+	ComposeFsDeployEtcDirFn = func(string) (string, error) { return etcDir, nil }
+
+	var calls [][]string
+	origRunFn := runner.RunFn
+	defer func() { runner.RunFn = origRunFn }()
+	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		if name == "ls" {
+			_, err := os.Stat(args[len(args)-1])
+			return err
+		}
+		return nil
+	}
+
+	if err := CreateUser(sysroot, UserConfig{Username: "carol", Password: "$6$s$h"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	wantRoot := filepath.Join(sysroot, "state", "deploy", "abc123")
+	var sawUseradd bool
+	for _, c := range calls {
+		if c[0] == "chroot" {
+			t.Errorf("composefs must not chroot: %v", c)
+		}
+		if c[0] == "useradd" && c[1] == "--root" && c[2] == wantRoot {
+			sawUseradd = true
 		}
 	}
-	return ""
-}
-
-func TestCreateUserComposeFsUsesStateDirAsRoot(t *testing.T) {
-	calls := captureRuns(t)
-	sysroot, stateDir := composefsRoot(t)
-
-	if err := post.CreateUser(sysroot, post.UserConfig{Username: "alice", Password: "secret"}); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-
-	ua := findCall(*calls, "useradd")
-	if ua == nil {
-		t.Fatal("useradd was not invoked")
-	}
-	if got := argAfter(ua, "--root"); got != stateDir {
-		t.Errorf("useradd --root = %q, want %q", got, stateDir)
-	}
-	// The state dir's var symlink dangles inside the chroot, so useradd
-	// must not be asked to create the home directory.
-	for _, a := range ua {
-		if a == "--create-home" {
-			t.Error("useradd must not use --create-home on composefs targets")
-		}
-	}
-	// Shell comes from the pristine etc/shells (no binaries exist under the
-	// state dir to stat).
-	if got := argAfter(ua, "--shell"); got != "/usr/bin/bash" {
-		t.Errorf("useradd --shell = %q, want /usr/bin/bash", got)
-	}
-}
-
-func TestCreateUserComposeFsCreatesHomeInSharedVar(t *testing.T) {
-	calls := captureRuns(t)
-	sysroot, stateDir := composefsRoot(t)
-
-	if err := post.CreateUser(sysroot, post.UserConfig{Username: "alice"}); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-
-	// Home is created through the state dir's var symlink, which resolves on
-	// the host to the shared var.
-	wantHome := filepath.Join(stateDir, "var", "home", "alice")
-	mk := findCall(*calls, "mkdir")
-	if mk == nil || mk[len(mk)-1] != wantHome {
-		t.Errorf("mkdir call = %v, want target %q", mk, wantHome)
-	}
-	cp := findCall(*calls, "cp")
-	if cp == nil || cp[len(cp)-1] != wantHome || cp[len(cp)-2] != filepath.Join(stateDir, "etc", "skel") {
-		t.Errorf("cp call = %v, want skel -> %q", cp, wantHome)
-	}
-	ch := findCall(*calls, "chown")
-	if ch == nil || ch[len(ch)-1] != wantHome {
-		t.Errorf("chown call = %v, want target %q", ch, wantHome)
-	}
-	found := false
-	for _, a := range ch {
-		if a == "1000:1000" {
-			found = true
-		}
-	}
-	if ch != nil && !found {
-		t.Errorf("chown call = %v, want uid:gid 1000:1000 from passwd", ch)
-	}
-}
-
-func TestCreateUserComposeFsChpasswdAvoidsPAM(t *testing.T) {
-	calls := captureRuns(t)
-	sysroot, _ := composefsRoot(t)
-
-	if err := post.CreateUser(sysroot, post.UserConfig{Username: "alice", Password: "secret"}); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-
-	cp := findCall(*calls, "chpasswd")
-	if cp == nil {
-		t.Fatal("chpasswd was not invoked")
-	}
-	// The etc-only chroot has no PAM modules; an explicit crypt method makes
-	// chpasswd hash the password itself.
-	if got := argAfter(cp, "--crypt-method"); got == "" {
-		t.Errorf("chpasswd call %v lacks --crypt-method (PAM would fail in etc-only chroot)", cp)
-	}
-}
-
-func TestCreateUserOstreeKeepsCreateHome(t *testing.T) {
-	calls := captureRuns(t)
-	sysroot, deployDir := ostreeRoot(t, "usr/bin/bash", "bin/bash")
-
-	if err := post.CreateUser(sysroot, post.UserConfig{Username: "alice"}); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-
-	ua := findCall(*calls, "useradd")
-	if ua == nil {
-		t.Fatal("useradd was not invoked")
-	}
-	if got := argAfter(ua, "--root"); got != deployDir {
-		t.Errorf("useradd --root = %q, want %q", got, deployDir)
-	}
-	hasCreateHome := false
-	for _, a := range ua {
-		if a == "--create-home" {
-			hasCreateHome = true
-		}
-	}
-	if !hasCreateHome {
-		t.Error("useradd must keep --create-home on ostree targets")
-	}
-	if got := argAfter(ua, "--shell"); got != "/usr/bin/bash" {
-		t.Errorf("useradd --shell = %q, want /usr/bin/bash", got)
-	}
-}
-
-func TestCreateUserOstreeShellFallsBackToBinBash(t *testing.T) {
-	calls := captureRuns(t)
-	sysroot, _ := ostreeRoot(t, "bin/bash")
-
-	if err := post.CreateUser(sysroot, post.UserConfig{Username: "alice"}); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-	ua := findCall(*calls, "useradd")
-	if got := argAfter(ua, "--shell"); got != "/bin/bash" {
-		t.Errorf("useradd --shell = %q, want /bin/bash", got)
-	}
-}
-
-func TestCreateUserOstreeShellDefaultsWhenNothingFound(t *testing.T) {
-	calls := captureRuns(t)
-	sysroot, _ := ostreeRoot(t) // no shells on disk, no etc/shells
-
-	if err := post.CreateUser(sysroot, post.UserConfig{Username: "alice"}); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-	ua := findCall(*calls, "useradd")
-	if got := argAfter(ua, "--shell"); got != "/usr/bin/bash" {
-		t.Errorf("useradd --shell = %q, want /usr/bin/bash", got)
+	if !sawUseradd {
+		t.Errorf("expected useradd --root %s; calls: %v", wantRoot, calls)
 	}
 }

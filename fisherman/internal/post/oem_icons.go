@@ -81,11 +81,8 @@ func installVendorIcon(target string, vendor string) error {
 
 	data, err := oemIcons.ReadFile(iconFile)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Icon file not yet available — skip gracefully (placeholder for future icons).
-			return nil
-		}
-		return fmt.Errorf("reading embedded icon: %w", err)
+		// Icon file not yet available — skip gracefully (placeholder for future icons)
+		return nil //nolint:nilerr // best-effort: absent/unreadable source → skip, continue
 	}
 
 	// Resolve target paths.

@@ -41,13 +41,19 @@ func overlayCandidate(scratchPath string) storageDriverCandidate {
 	if err != nil {
 		return storageDriverCandidate{"vfs", fmt.Sprintf("could not detect filesystem type: %v", err)}
 	}
+	return overlaySafe(fsType)
+}
 
+// overlaySafe is the pure filesystem-type → driver decision, split out so it
+// can be tested deterministically without depending on the ambient
+// filesystem type of any real path (e.g. /tmp is tmpfs on dev machines but
+// ext4 on CI runners).
+func overlaySafe(fsType string) storageDriverCandidate {
 	// Filesystems where overlay should NOT be used.
 	unsafeFS := map[string]bool{
 		"overlayfs": true,
 		"tmpfs":     true,
 	}
-
 	if unsafeFS[fsType] {
 		return storageDriverCandidate{"vfs", fmt.Sprintf("scratch filesystem %s does not support overlay", fsType)}
 	}
@@ -88,6 +94,7 @@ func filesystemType(path string) (string, error) {
 		0x58465342: "xfs",
 		0x794c7630: "overlayfs",
 		0x01021994: "tmpfs",
+		0x858458f6: "ramfs",
 		0x6969:     "nfs",
 	}
 
@@ -96,6 +103,23 @@ func filesystemType(path string) (string, error) {
 	}
 
 	return fmt.Sprintf("unknown(0x%x)", st.Type), nil
+}
+
+// defaultStorageSpaceConstrained reports whether podman's default storage
+// location lives on a memory-backed filesystem (tmpfs/ramfs/overlayfs) where
+// a multi-gigabyte image pull would exhaust RAM. When the host has already
+// provided disk-backed storage there (e.g. the wootc deployer bind-mounts an
+// ext4 loop at /var/lib/containers), redirecting storage into the target disk
+// is wasteful: it forces the OCI-export path, which lands three copies of the
+// image inside the target (containers-root + oci-cache + the deployment) and
+// overflows fixed-size targets.
+func defaultStorageSpaceConstrained() bool {
+	for _, p := range []string{"/var/lib/containers", "/var"} {
+		if fsType, err := filesystemType(p); err == nil {
+			return fsType == "tmpfs" || fsType == "ramfs" || fsType == "overlayfs"
+		}
+	}
+	return false
 }
 
 // probeOverlay attempts to verify that podman can use the overlay driver on the target root.

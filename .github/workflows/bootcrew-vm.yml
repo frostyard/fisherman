@@ -29,9 +29,9 @@ jobs:
           cache: true
           cache-dependency-path: fisherman/go.sum
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.61
+          version: v2.6
           working-directory: fisherman
           # .golangci.yml at the repo root configures the linter set.
           args: --config=${{ github.workspace }}/.golangci.yml --timeout=5m
@@ -101,9 +101,11 @@ jobs:
         image: ${{ fromJson(needs.setup.outputs.matrix_required) }}
     steps:
       - uses: actions/checkout@v4
+
       # Free ~30 GiB on the runner before we pull multi-GB OCI images and
-      # build a target loop disk. This must precede setup-go because tool-cache
-      # cleanup removes toolchains installed by earlier actions.
+      # build a target loop disk. Pattern lifted from projectbluefin/dakota-iso.
+      # Must run BEFORE setup-go: tool-cache:true wipes /opt/hostedtoolcache,
+      # which is where setup-go installs the toolchain.
       - name: Free disk space
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
         with:
@@ -191,6 +193,8 @@ jobs:
         image: ${{ fromJson(needs.setup.outputs.matrix_advisory) }}
     steps:
       - uses: actions/checkout@v4
+      # Must run BEFORE setup-go: tool-cache:true wipes /opt/hostedtoolcache,
+      # which is where setup-go installs the toolchain.
       - name: Free disk space
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
         with:

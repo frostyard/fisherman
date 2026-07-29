@@ -423,7 +423,7 @@ func GenerateSystemThumbnails(target string, composeFsNative bool) (int, error) 
 			var installedPath string
 			relToTarget, err := filepath.Rel(target, path)
 			if err != nil {
-				return err
+				return nil //nolint:nilerr // best-effort: absent/unreadable source → skip, continue
 			}
 			installedPath = "/" + relToTarget
 

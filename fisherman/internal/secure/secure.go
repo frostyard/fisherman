@@ -264,7 +264,7 @@ func VerifyInstalled(root string, contract *Contract, expectedComposefs string) 
 	}
 	entries, err := filepath.Glob(filepath.Join(root, "boot/efi/loader/entries/*.conf"))
 	if err != nil || len(entries) == 0 {
-		return nil, fmt.Errorf("finding installed Type #2 BLS entries")
+		return nil, fmt.Errorf("finding installed type #2 BLS entries")
 	}
 	for _, required := range []string{"BOOTX64.EFI", "mmx64.efi", "grubx64.efi"} {
 		if _, err := os.Stat(filepath.Join(root, "boot/efi/EFI/BOOT", required)); err != nil {
@@ -366,7 +366,7 @@ func RepairESP(root, mokCertificate string) error {
 	}
 	entries, err := filepath.Glob(filepath.Join(root, "boot/efi/loader/entries/*.conf"))
 	if err != nil || len(entries) == 0 {
-		return fmt.Errorf("finding installed Type #2 BLS entries")
+		return fmt.Errorf("finding installed type #2 BLS entries")
 	}
 	for _, entry := range entries {
 		data, err := os.ReadFile(entry)

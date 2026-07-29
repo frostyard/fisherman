@@ -1,7 +1,6 @@
 package post
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"os"
@@ -40,11 +39,18 @@ func CreateUser(sysroot string, u UserConfig) error {
 	}
 
 	var root string
+	var staterootHome string
 	composefs := isComposeFsNative(sysroot)
 	if composefs {
+		// composefs-native has no full chrootable rootfs during deploy — the
+		// sealed image's /usr (with useradd) is mounted read-only elsewhere,
+		// so `chroot <sysroot> useradd` exits 127 (dakota, GH matrix
+		// 20260724T1508). Point at the writable deployment root (parent of
+		// the state/deploy/<hash>/etc dir) and use `useradd --root` below,
+		// which edits the passwd files without needing a chroot rootfs.
 		etcDir, err := ComposeFsDeployEtcDirFn(sysroot)
 		if err != nil {
-			return fmt.Errorf("finding composefs deploy etc: %w", err)
+			return fmt.Errorf("finding composefs deploy root: %w", err)
 		}
 		root = filepath.Dir(etcDir)
 	} else {
@@ -56,48 +62,120 @@ func CreateUser(sysroot string, u UserConfig) error {
 
 		// On ostree/bootc, /home inside the deployment is a symlink to
 		// var/home (the stateroot var). Pre-create the stateroot home dir so
-		// that useradd --create-home has a real directory to populate.
-		staterootHome := filepath.Join(sysroot, "ostree", "deploy", "default", "var", "home")
+		// the relocation below has a destination.
+		staterootHome = filepath.Join(sysroot, "ostree", "deploy", "default", "var", "home")
 		if err := runner.Run("mkdir", "-p", staterootHome); err != nil {
 			return fmt.Errorf("mkdir stateroot home: %w", err)
 		}
 	}
 
-	// Build useradd arguments.
-	args := []string{
-		"--root", root,
-		"--shell", loginShell(root),
-	}
-	if !composefs {
-		args = append(args, "--create-home")
-	}
+	// Run the TARGET's useradd via chroot rather than `useradd --root`:
+	// --root chroots too, but first initializes the HOST's PAM/SELinux
+	// stack — from a booted host it dies with "failure while writing
+	// changes to /etc/passwd" against a target whose etc is perfectly
+	// writable (wootc run 20260723T0738: the deployer-initramfs
+	// environment masked this; the same call from booted Phase 2 failed
+	// every time while `chroot <dep> useradd` succeeded on the same
+	// files). Plain chroot uses only the target's own libraries.
+	// ostree: `chroot <deployDir> useradd` (the deployDir is a full rootfs).
+	// composefs-native: `useradd --root <deployRoot>` (no chroot rootfs
+	// exists during deploy; --root only edits the passwd files, and the
+	// booted-host PAM problem that forced chroot is ostree-only — composefs
+	// deploys happen in the initramfs).
+	tail := []string{"useradd", "--create-home", "--shell", "/bin/bash"}
 	if u.Fullname != "" {
-		args = append(args, "--comment", u.Fullname)
+		tail = append(tail, "--comment", u.Fullname)
 	}
 	if len(u.Groups) > 0 {
-		args = append(args, "--groups", strings.Join(u.Groups, ","))
+		tail = append(tail, "--groups", strings.Join(u.Groups, ","))
 	}
-	args = append(args, u.Username)
-
-	if err := runner.Run("useradd", args...); err != nil {
-		return fmt.Errorf("useradd: %w", err)
-	}
+	tail = append(tail, u.Username)
 
 	if composefs {
-		if err := createComposeFsHome(root, u.Username); err != nil {
-			return fmt.Errorf("creating home: %w", err)
+		// tail[0] is the literal "useradd" command name, needed only by the
+		// ostree branch's `chroot <root> useradd …`. Here we invoke the
+		// useradd binary directly, so drop it — otherwise it becomes a second
+		// positional login name alongside the username and shadow-utils exits 2
+		// ("invalid command syntax", dakota GH matrix 20260724T1705).
+		//
+		// Also drop --create-home: on a composefs-native deploy root, /home is a
+		// symlink to a stateroot var that does not exist under --root, so useradd
+		// --create-home cannot create the directory and exits 12 (dakota GH
+		// matrix 20260724T2128). The passwd entry is written without it, and the
+		// composefs tmpfiles.d snippet below builds+labels /var/home/<user> from
+		// /etc/skel on first boot — the same mechanism the ostree branch relies
+		// on after its relocation.
+		cargs := []string{"--root", root}
+		for _, a := range tail[1:] {
+			if a == "--create-home" {
+				continue
+			}
+			cargs = append(cargs, a)
+		}
+		if err := runner.Run("useradd", cargs...); err != nil {
+			return fmt.Errorf("useradd (--root %s): %w", root, err)
+		}
+		// First-boot home creation for composefs-native (no staterootHome
+		// relocation path). /home -> var/home is a bootc invariant, so the
+		// runtime /var/home/<user> path is correct regardless of the composefs
+		// deploy layout. Mirrors the ostree snippet below.
+		if err := writeHomeTmpfiles(root, u.Username); err != nil {
+			return err
+		}
+	} else {
+		if err := runner.Run("chroot", append([]string{root}, tail...)...); err != nil {
+			return fmt.Errorf("useradd (chroot %s): %w", root, err)
+		}
+	}
+
+	// useradd --create-home resolved /home through the deployment's
+	// /home -> var/home symlink and wrote the directory into the
+	// DEPLOYMENT's own var/ — which the booted system never sees: the
+	// stateroot var is mounted over /var at runtime. The account then
+	// boots with a passwd entry but no home directory at all (wootc E2E
+	// run 20260723T0423: var/home held only the image's seed content).
+	// Relocate the freshly created home into the stateroot var, and pin
+	// it with a tmpfiles.d snippet so the first boot (re)creates it from
+	// /etc/skel if missing and restores ownership + SELinux labels under
+	// the live policy — offline useradd cannot label correctly.
+	if staterootHome != "" {
+		deployHome := filepath.Join(root, "var", "home", u.Username)
+		stateHome := filepath.Join(staterootHome, u.Username)
+		if _, err := os.Stat(deployHome); err == nil {
+			if _, err := os.Stat(stateHome); os.IsNotExist(err) {
+				if err := runner.Run("mv", deployHome, stateHome); err != nil {
+					return fmt.Errorf("relocating home to stateroot var: %w", err)
+				}
+			}
+		}
+		if err := writeHomeTmpfiles(root, u.Username); err != nil {
+			return err
 		}
 	}
 
 	// Set the password via chpasswd stdin to avoid it appearing in ps output.
+	// Same ostree-chroot vs composefs---root split as useradd above.
 	if u.Password != "" {
 		input := fmt.Sprintf("%s:%s\n", u.Username, u.Password)
-		chpasswdArgs := []string{"--root", root}
-		if composefs {
-			chpasswdArgs = append(chpasswdArgs, "--crypt-method", "SHA512")
+		// A pre-hashed crypt(3) string ("$id$salt$hash", e.g. wootc's vault
+		// $6$ SHA-512) must be written verbatim with -e. Without it chpasswd
+		// (a) treats the hash as a PLAINTEXT password — the account's real
+		// password becomes the literal hash text — and (b) invokes the
+		// hashing stack (PAM/crypt config), which exits 1 on EL10 targets.
+		flag := []string{}
+		if strings.HasPrefix(u.Password, "$") {
+			flag = []string{"-e"}
 		}
-		if err := runner.RunWithStdin(bytes.NewBufferString(input), "chpasswd", chpasswdArgs...); err != nil {
-			return fmt.Errorf("chpasswd: %w", err)
+		var cpErr error
+		if composefs {
+			cpErr = runner.RunWithStdin(bytes.NewBufferString(input), "chpasswd",
+				append([]string{"--root", root}, flag...)...)
+		} else {
+			cpErr = runner.RunWithStdin(bytes.NewBufferString(input), "chroot",
+				append([]string{root, "chpasswd"}, flag...)...)
+		}
+		if cpErr != nil {
+			return fmt.Errorf("chpasswd (%s): %w", root, cpErr)
 		}
 	}
 
@@ -105,99 +183,26 @@ func CreateUser(sysroot string, u UserConfig) error {
 	return nil
 }
 
-// createComposeFsHome creates the user's home directory for a composefs-native
-// deployment. The home path recorded by useradd (normally /var/home/<user>,
-// from the image's /etc/default/useradd) is resolved through the state dir's
-// var symlink, which on the host points at the shared var
-// (state/os/default/var) — the tree that is mounted at /var on the booted
-// system. Skel files are copied from the pristine etc and ownership is taken
-// from the passwd entry useradd just wrote.
-func createComposeFsHome(stateDir, username string) error {
-	home, uid, gid, err := passwdEntry(filepath.Join(stateDir, "etc", "passwd"), username)
-	if err != nil {
-		return err
+// writeHomeTmpfiles drops a tmpfiles.d snippet under <root>/etc/tmpfiles.d that
+// makes the first boot create /var/home/<user> from /etc/skel if missing and
+// restore ownership + SELinux labels under the live policy — offline useradd
+// cannot label correctly, and on composefs-native it cannot create the home at
+// all. /home -> var/home is a bootc invariant, so the runtime /var/home path is
+// correct for both ostree and composefs deploys.
+func writeHomeTmpfiles(root, username string) error {
+	tmpfilesDir := filepath.Join(root, "etc", "tmpfiles.d")
+	if err := os.MkdirAll(tmpfilesDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir tmpfiles.d: %w", err)
 	}
-	if !strings.HasPrefix(home, "/var/") {
-		fmt.Printf("  warning: home %q is not under /var, skipping home creation\n", home)
-		return nil
-	}
-
-	dest := filepath.Join(stateDir, home)
-	if err := runner.Run("mkdir", "-p", dest); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dest, err)
-	}
-	skel := filepath.Join(stateDir, "etc", "skel")
-	if _, err := os.Stat(skel); err == nil {
-		if err := runner.Run("cp", "-aT", skel, dest); err != nil {
-			return fmt.Errorf("copying skel: %w", err)
-		}
-	}
-	if err := runner.Run("chown", "-R", fmt.Sprintf("%s:%s", uid, gid), dest); err != nil {
-		return fmt.Errorf("chown %s: %w", dest, err)
-	}
-	if err := runner.Run("chmod", "700", dest); err != nil {
-		return fmt.Errorf("chmod %s: %w", dest, err)
+	// Z mode "-": fix ownership and restore SELinux contexts recursively but
+	// keep each file's own mode — 0700 here would mark every migrated document
+	// executable.
+	snippet := fmt.Sprintf(
+		"C /var/home/%[1]s 0700 %[1]s %[1]s - /etc/skel\nZ /var/home/%[1]s - %[1]s %[1]s -\n",
+		username)
+	snippetPath := filepath.Join(tmpfilesDir, "fisherman-home-"+username+".conf")
+	if err := os.WriteFile(snippetPath, []byte(snippet), 0o644); err != nil {
+		return fmt.Errorf("writing home tmpfiles snippet: %w", err)
 	}
 	return nil
-}
-
-// passwdEntry returns the home directory, uid, and gid recorded for username
-// in the passwd file at path.
-func passwdEntry(path, username string) (home, uid, gid string, err error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", "", "", fmt.Errorf("reading %s: %w", path, err)
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Split(line, ":")
-		if len(fields) >= 6 && fields[0] == username {
-			return fields[5], fields[2], fields[3], nil
-		}
-	}
-	return "", "", "", fmt.Errorf("user %q not found in %s", username, path)
-}
-
-// loginShell picks the login shell for the created user, validating each
-// candidate against the installed system's root rather than the live
-// environment. A candidate is accepted if it is listed in the root's
-// /etc/shells (the image's own list — on composefs targets no binaries exist
-// under the root to stat) or if it exists and is executable under the root.
-// /usr/bin/bash comes first: on merged-/usr images /bin is a symlink that may
-// not resolve in every mount context. If nothing validates, /usr/bin/bash is
-// still returned so the account is created with a sane value (useradd itself
-// only warns).
-func loginShell(root string) string {
-	candidates := []string{"/usr/bin/bash", "/bin/bash", "/usr/bin/sh", "/bin/sh"}
-	listed := readEtcShells(filepath.Join(root, "etc", "shells"))
-	for _, shell := range candidates {
-		if listed[shell] {
-			return shell
-		}
-		fi, err := os.Stat(filepath.Join(root, shell))
-		if err == nil && fi.Mode().IsRegular() && fi.Mode()&0111 != 0 {
-			return shell
-		}
-	}
-	fmt.Printf("  warning: no login shell found under %s, defaulting to /usr/bin/bash\n", root)
-	return "/usr/bin/bash"
-}
-
-// readEtcShells parses an /etc/shells file into a set. Returns an empty set
-// if the file cannot be read.
-func readEtcShells(path string) map[string]bool {
-	shells := map[string]bool{}
-	f, err := os.Open(path)
-	if err != nil {
-		return shells
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		shells[line] = true
-	}
-	return shells
 }

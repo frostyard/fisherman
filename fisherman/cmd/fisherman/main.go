@@ -685,7 +685,7 @@ func main() {
 				fatal("setting up btrfs subvolumes: %v", err)
 			}
 		} else {
-			if err := disk.Mount(rootDev, targetMount, ""); err != nil {
+			if err := disk.MountType(rootDev, targetMount, r.Filesystem, ""); err != nil {
 				fatal("mounting root: %v", err)
 			}
 		}
@@ -796,6 +796,7 @@ func main() {
 		CosignKeyPath:         cosignKey,
 		UnifiedStorage:        r.UnifiedStorage,
 		ComposeFsBackend:      composeFsBackend,
+		GenericImage:          r.GenericImage,
 		Bootloader:            r.Bootloader,
 		Target:                activeTargetMount,
 		ScratchDir:            scratchDir,
@@ -864,6 +865,13 @@ func main() {
 			fatal("retagging root partition: %v", err)
 		}
 		// Remount root so finalization and post-install writes can proceed.
+		// udisksctl unmount (used by UnmountPartition above) removes the
+		// mountpoint directory it manages, and disk.Mount — unlike
+		// MountTmpfs/BindMount — does not create its target, so recreate it
+		// or the plain `mount` syscall below fails with ENOENT.
+		if err := os.MkdirAll(activeTargetMount, 0o755); err != nil {
+			fatal("recreating target mountpoint before remount: %v", err)
+		}
 		rootPart := disk.PartName(r.Disk, 2)
 		if err := disk.Mount(rootPart, activeTargetMount, ""); err != nil {
 			fatal("remounting root partition after retagging: %v", err)
@@ -889,9 +897,16 @@ func main() {
 		if r.Encryption.Type == "tpm2-luks" {
 			unlockPassphrase = luksRecoveryKey
 		}
-		if err := luks.EnrollTPM2(activeRootPart, unlockPassphrase); err != nil {
-			// Non-fatal: TPM2 hardware may not be present (e.g. VMs).
-			progress.Info(fmt.Sprintf("Warning: TPM2 enrolment failed (recovery key unlock still works): %v", err))
+		// Enroll TPM2 on the FIRST BOOT of the installed system, not here:
+		// --tpm2-pcrs=7 seals against PCR 7 as measured in the live
+		// installer, but the installed system boots a different chain and
+		// measures a different PCR 7 — so an install-time enrollment can
+		// never unseal on first boot. Staging a first-boot oneshot captures
+		// the correct PCR 7. The recovery/passphrase key unlocks until then.
+		if err := luks.StageFirstBootEnrollment(activeTargetMount, activeLuksUUID, unlockPassphrase); err != nil {
+			progress.Info(fmt.Sprintf("Warning: could not stage first-boot TPM2 enrollment (recovery key unlock still works): %v", err))
+		} else {
+			progress.Info("TPM2 auto-unlock will be enrolled on first boot")
 		}
 
 		// For tpm2-luks the user never chose a passphrase, so we emit the

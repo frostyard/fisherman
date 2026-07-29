@@ -17,16 +17,16 @@ func ValidateType2BLS(entry []byte) (string, error) {
 		}
 		switch fields[0] {
 		case "linux", "initrd":
-			return "", fmt.Errorf("Type #2 BLS entry contains forbidden %s directive", fields[0])
+			return "", fmt.Errorf("type #2 BLS entry contains forbidden %s directive", fields[0])
 		case "efi":
 			if len(fields) != 2 || efi != "" || !strings.HasPrefix(fields[1], "/EFI/Linux/") || !strings.HasSuffix(fields[1], ".efi") {
-				return "", fmt.Errorf("Type #2 BLS entry has an invalid efi directive")
+				return "", fmt.Errorf("type #2 BLS entry has an invalid efi directive")
 			}
 			efi = fields[1]
 		}
 	}
 	if efi == "" {
-		return "", fmt.Errorf("Type #2 BLS entry has no efi directive")
+		return "", fmt.Errorf("type #2 BLS entry has no efi directive")
 	}
 	return efi, nil
 }

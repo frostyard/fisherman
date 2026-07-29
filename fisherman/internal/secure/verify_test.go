@@ -22,7 +22,7 @@ func TestValidateType2BLSRequiresEFIOnly(t *testing.T) {
 		"two efi":    "efi /EFI/Linux/one.efi\nefi /EFI/Linux/two.efi\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := secure.ValidateType2BLS([]byte(entry)); err == nil || !strings.Contains(err.Error(), "Type #2") {
+			if _, err := secure.ValidateType2BLS([]byte(entry)); err == nil || !strings.Contains(err.Error(), "type #2") {
 				t.Fatalf("ValidateType2BLS() error = %v", err)
 			}
 		})

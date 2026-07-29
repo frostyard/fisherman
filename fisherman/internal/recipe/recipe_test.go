@@ -284,23 +284,92 @@ func TestLoad(t *testing.T) {
 	})
 }
 
+// Manual (customMounts) layouts: two ways a recipe can be accepted here and
+// then do the wrong thing later. Both were hit in practice by
+// tuna-os/bootc-installer-asahi.
+
+func manualRecipe(t *testing.T, fstype string, enc string) *recipe.Recipe {
+	t.Helper()
+	// Validate() stats the partition paths, so use files that exist.
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.WriteFile(root, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &recipe.Recipe{
+		Image:        "example.invalid/img:latest",
+		Hostname:     "validate-test",
+		CustomMounts: []recipe.CustomMount{{Partition: root, Target: "/", Fstype: fstype}},
+	}
+	r.Encryption.Type = enc
+	return r
+}
+
+func TestValidateRejectsUnsupportedCustomMountFstype(t *testing.T) {
+	// "vfat" is the obvious spelling for an ESP and is NOT accepted:
+	// formatPartition knows "fat32". Previously this passed Validate() and
+	// failed mid-install, after the caller had already committed to the recipe.
+	err := manualRecipe(t, "vfat", "none").Validate()
+	if err == nil {
+		t.Fatal("expected an unsupported-fstype error, got nil")
+	}
+	if !strings.Contains(err.Error(), "vfat") {
+		t.Errorf("error should name the offending value, got: %v", err)
+	}
+}
+
+func TestValidateAcceptsSkipFormatSentinels(t *testing.T) {
+	// An existing ESP must be mountable WITHOUT being reformatted: it already
+	// holds the bootloader and, on Apple Silicon, non-redistributable vendor
+	// firmware. Both spellings must survive validation.
+	for _, fstype := range []string{"", "unformatted"} {
+		if err := manualRecipe(t, fstype, "none").Validate(); err != nil {
+			t.Errorf("fstype %q should be accepted, got: %v", fstype, err)
+		}
+	}
+}
+
+func TestValidateAcceptsSupportedCustomMountFstypes(t *testing.T) {
+	for _, fstype := range []string{"fat32", "ext3", "ext4", "xfs", "btrfs"} {
+		if err := manualRecipe(t, fstype, "none").Validate(); err != nil {
+			t.Errorf("fstype %q should be accepted, got: %v", fstype, err)
+		}
+	}
+}
+
+func TestValidateRejectsEncryptionWithCustomMounts(t *testing.T) {
+	// The manual path never runs luksFormat, so an encrypted manual recipe
+	// installs UNENCRYPTED while the caller believes otherwise. Fail closed.
+	for _, enc := range []string{"luks-passphrase", "tpm2-luks"} {
+		err := manualRecipe(t, "xfs", enc).Validate()
+		if err == nil {
+			t.Fatalf("encryption %q with customMounts must be rejected", enc)
+		}
+		if !strings.Contains(err.Error(), "unencrypted") {
+			t.Errorf("error should explain the consequence, got: %v", err)
+		}
+	}
+}
+
+func TestValidateAllowsNoEncryptionWithCustomMounts(t *testing.T) {
+	for _, enc := range []string{"", "none"} {
+		if err := manualRecipe(t, "xfs", enc).Validate(); err != nil {
+			t.Errorf("encryption %q should be accepted, got: %v", enc, err)
+		}
+	}
+}
+
 func TestSecureInstallRequiresExplicitCompatibleRecipe(t *testing.T) {
 	dir := t.TempDir()
 	diskPath := filepath.Join(dir, "disk")
 	recoveryKey := filepath.Join(dir, "recovery")
 	mokPassword := filepath.Join(dir, "mok-password")
 	cosignKey := filepath.Join(dir, "cosign.pub")
-	if err := os.WriteFile(diskPath, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(recoveryKey, []byte("recovery"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(mokPassword, []byte("MokPassw0rd"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cosignKey, []byte("public"), 0o644); err != nil {
-		t.Fatal(err)
+	for path, mode := range map[string]os.FileMode{
+		diskPath: 0o600, recoveryKey: 0o600, mokPassword: 0o600, cosignKey: 0o644,
+	} {
+		if err := os.WriteFile(path, []byte("credential"), mode); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	valid := recipe.Recipe{
@@ -379,12 +448,12 @@ func TestSecureInstallRejectsUnsafeCredentialFiles(t *testing.T) {
 			}
 			r.SecureInstall.RecoveryKeyFile = link
 		},
-		"multiple links": func(r *recipe.Recipe) {
+		"multiple links": func(_ *recipe.Recipe) {
 			if err := os.Link(credential, filepath.Join(dir, "credential-hardlink")); err != nil {
 				t.Fatal(err)
 			}
 		},
-		"wrong mode": func(r *recipe.Recipe) {
+		"wrong mode": func(_ *recipe.Recipe) {
 			if err := os.Chmod(credential, 0o640); err != nil {
 				t.Fatal(err)
 			}
