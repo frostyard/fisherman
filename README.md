@@ -189,9 +189,18 @@ version.
 Frostyard releases are published from version tags at
 [`frostyard/fisherman`](https://github.com/frostyard/fisherman/releases).
 Run the `Cut Release` workflow from the `dev` branch with the intended semver
-bump. `RELEASE_TOKEN` must be configured so the tag push triggers the separate
-publisher; the publisher tests the tagged source, stages a draft, verifies all
-remote assets, and then makes the release public.
+bump. The workflow deliberately uses `RELEASE_TOKEN || GITHUB_TOKEN`:
+`RELEASE_TOKEN` lets the pushed tag trigger the separate publisher, while the
+fallback still permits the cut. Without `RELEASE_TOKEN`, GitHub can accept the
+tag push but suppress the downstream workflow, leaving a successfully pushed
+orphan tag with no release. Operators must verify that `Publish Release` starts
+for the new tag before treating a cut as complete.
+
+The publisher tests the tagged source, stages a draft, verifies the expected
+remote asset names and `checksums.txt` entries, and then makes the release
+public. It downloads `checksums.txt` for that check; it does not download and
+recompute every remote asset digest. The consumer's independently pinned
+digest remains the installation trust boundary.
 
 Each `vX.Y.Z` release provides directly executable Linux assets:
 

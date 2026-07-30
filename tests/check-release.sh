@@ -10,6 +10,11 @@ goreleaser_action='goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8
 goreleaser_version='version: v2.17.1'
 cd "$repo_root"
 
+command -v file >/dev/null || {
+  echo "release contract requires the file command" >&2
+  exit 1
+}
+
 rm -rf dist
 trap 'rm -rf "$repo_root/dist"' EXIT
 
@@ -93,14 +98,54 @@ for name in "${raw_assets[@]}" "${archive_assets[@]}" checksums.txt; do
     dist/artifacts.json >/dev/null || {
       echo "missing or duplicate snapshot artifact: $name" >&2
       exit 1
-    }
+  }
 done
+
+expected_uploadable_assets=("${raw_assets[@]}" "${archive_assets[@]}" checksums.txt)
+unexpected_artifact_types=$(jq -r '
+  .[]
+  | select(.type != "Metadata" and .type != "Binary" and .type != "Archive" and .type != "Checksum")
+  | "\(.type):\(.name)"
+' dist/artifacts.json)
+[[ -z $unexpected_artifact_types ]] || {
+  echo "unexpected release artifact types: $unexpected_artifact_types" >&2
+  exit 1
+}
+uploadable_artifacts=$(jq -r '
+  .[]
+  | select(
+      .type == "Archive"
+      or .type == "Checksum"
+      or (.type == "Binary" and .name != "fisherman")
+    )
+  | .name
+' dist/artifacts.json)
+for name in $uploadable_artifacts; do
+  case " ${expected_uploadable_assets[*]} " in
+    *" $name "*) ;;
+    *)
+      echo "unexpected uploadable snapshot artifact: $name" >&2
+      exit 1
+      ;;
+  esac
+done
+
+jq -e '[.[] | select(.type == "Binary" and .name == "fisherman")] | length == 2' \
+  dist/artifacts.json >/dev/null || {
+  echo "unexpected GoReleaser build targets" >&2
+  exit 1
+}
 
 for name in "${raw_assets[@]}"; do
   path=$(jq -er --arg name "$name" '.[] | select(.name == $name) | .path' \
     dist/artifacts.json)
   [[ -x "$path" ]] || {
     echo "raw artifact is not executable: $name" >&2
+    exit 1
+  }
+  description=$(file -b "$path")
+  [[ $description == *ELF* && $description == *executable* && $description == *"statically linked"* ]] || {
+    echo "raw artifact is not a statically linked ELF executable: $name ($description)" >&2
     exit 1
   }
 done

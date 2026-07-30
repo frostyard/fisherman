@@ -15,11 +15,12 @@
 - Raw assets are exactly `fisherman_<version>_linux_amd64` and `fisherman_<version>_linux_arm64`.
 - Existing `fisherman_<version>_linux_amd64.tar.gz` and `fisherman_<version>_linux_arm64.tar.gz` assets remain available.
 - `checksums.txt` contains lowercase SHA-256 entries for both raw binaries and both archives.
-- Builds remain Linux-only and static with `CGO_ENABLED=0`.
+- Builds remain Linux-only and static with `CGO_ENABLED=0`; the contract rejects uploadable artifacts outside the exact four names plus `checksums.txt` and requires both raw assets to be static ELF executables.
 - Pin GoReleaser to `v2.17.1` and `goreleaser/goreleaser-action` to commit `f06c13b6b1a9625abc9e6e439d9c05a8f2190e94` (`v7`).
-- Publication stages a GitHub draft, verifies it remotely, and only then makes it public.
+- Publication stages a GitHub draft, verifies expected remote asset names and checksum-manifest entries (not recomputed remote bytes), and only then makes it public.
+- `replace_existing_draft: true` replaces a prior draft for the same tag on retry; a post-publish API assertion can rarely fail after publication, requiring manual release-state inspection rather than a blind retry.
 - Pull request validation never creates a tag or GitHub Release.
-- Do not modify a consumer repository or cut a production release in this implementation plan.
+- Do not modify a consumer repository or cut a production release in this implementation plan; the first live cut/draft execution remains a deferred go-live gate.
 - Never commit `dist/` or any generated release artifact.
 
 ---
@@ -299,7 +300,7 @@ git commit -m "ci: validate release artifacts on pull requests"
 
 **Interfaces:**
 - Consumes: draft-producing `.goreleaser.yml` from Task 1 and the pinned action contract from Task 2.
-- Produces: tag publication that verifies the remote draft asset names and checksum entries before making the release public.
+- Produces: tag publication that verifies the remote draft asset names and checksum entries, but does not recompute remote asset bytes, before making the release public.
 
 - [ ] **Step 1: Add failing static assertions for the publish workflow**
 
@@ -445,7 +446,7 @@ shellcheck tests/check-release.sh
 git diff --check
 ```
 
-Expected: all commands PASS. This step deliberately does not push a tag or create a release; remote draft behavior is exercised by the first authorized release cut.
+Expected: all commands PASS. This step deliberately does not push a tag or create a release; the first authorized live cut/draft execution remains a deferred go-live gate.
 
 - [ ] **Step 4: Commit fail-closed publication**
 
@@ -503,7 +504,7 @@ Insert this step immediately after checkout in `.github/workflows/release-cut.ym
           }
 ```
 
-Keep the existing tag calculation, annotated tag push, and `dev` to `prod` PR behavior unchanged. Preserve the existing `RELEASE_TOKEN` use because a tag pushed only with `GITHUB_TOKEN` does not trigger the publish workflow.
+Keep the existing tag calculation, annotated tag push, and `dev` to `prod` PR behavior unchanged. Preserve `RELEASE_TOKEN || GITHUB_TOKEN`: without `RELEASE_TOKEN`, a tag can be pushed successfully but GitHub can suppress the publisher trigger, leaving an orphan tag. Operators must verify that the publisher starts; do not make the token mandatory.
 
 - [ ] **Step 3: Document the Frostyard release contract**
 
@@ -515,9 +516,12 @@ Add a `## Releases` section to `README.md` before `## License`:
 Frostyard releases are published from version tags at
 [`frostyard/fisherman`](https://github.com/frostyard/fisherman/releases).
 Run the `Cut Release` workflow from the `dev` branch with the intended semver
-bump. `RELEASE_TOKEN` must be configured so the tag push triggers the separate
-publisher; the publisher tests the tagged source, stages a draft, verifies all
-remote assets, and then makes the release public.
+bump. The workflow uses `RELEASE_TOKEN || GITHUB_TOKEN`; without
+`RELEASE_TOKEN`, a pushed tag can become an orphan because GitHub suppresses
+the publisher trigger. Operators must verify that `Publish Release` starts.
+The publisher verifies expected remote asset names and checksum-manifest
+entries, not recomputed remote asset bytes; the consumer's independent digest
+remains the trust boundary.
 
 Each `vX.Y.Z` release provides directly executable Linux assets:
 
@@ -608,4 +612,4 @@ Expected: GitHub returns the new pull request URL.
 gh pr checks --repo frostyard/fisherman --watch --interval 20
 ```
 
-Expected: `Validate Release / release-contract` passes along with existing required checks. Do not dispatch `Cut Release` as part of this plan.
+Expected: when this release PR changes a configured path, `Validate Release / release-contract` passes. Do not configure it as a globally required branch-protection context: the workflow is path-filtered and would otherwise leave unrelated PRs pending. Do not dispatch `Cut Release`; the first live cut/draft execution remains the deferred go-live gate.

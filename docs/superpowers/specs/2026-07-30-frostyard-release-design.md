@@ -11,8 +11,9 @@ for consumers that cannot unpack an archive during image assembly.
 
 This change owns Fisherman's release contract only. It does not configure any
 consumer repository, cut a production release, or change Fisherman's runtime
-behavior. Consumer projects remain responsible for pinning an exact versioned
-HTTPS asset URL and an independently configured SHA-256 value.
+behavior. The first live cut and draft publication remain a deferred go-live
+gate. Consumer projects remain responsible for pinning an exact versioned HTTPS
+asset URL and an independently configured SHA-256 value.
 
 ## Release Ownership And Versioning
 
@@ -53,14 +54,20 @@ The tag-triggered publish job performs these stages in order:
 5. Run a clean GoReleaser release using a specifically pinned GoReleaser
    version and the job-scoped GitHub token, creating a draft release.
 6. Verify that the draft GitHub Release belongs to
-   `frostyard/fisherman` and contains both raw binaries, both archives, and
-   `checksums.txt`.
+   `frostyard/fisherman`, has the expected raw-binary/archive/checksum asset
+   names, and has a `checksums.txt` entry for each expected binary and archive.
+   This downloads `checksums.txt` only; it does not recompute remote asset
+   bytes.
 7. Publish the verified draft and report success.
 
 The workflow retains only `contents: write`, plus read permissions needed by
 checkout and dependency retrieval. It does not publish containers or require
 long-lived release credentials. The existing optional `RELEASE_TOKEN` remains
-limited to release-cut's cross-workflow tag trigger.
+limited to release-cut's cross-workflow tag trigger. Release cut intentionally
+uses `RELEASE_TOKEN || GITHUB_TOKEN`: missing `RELEASE_TOKEN` may successfully
+push an orphan tag without triggering the publisher because GitHub suppresses
+workflow triggers from `GITHUB_TOKEN` pushes. Operators must verify that the
+publisher starts for every cut.
 
 ## Pull Request Validation
 
@@ -72,6 +79,8 @@ release contract check that:
 - requires the exact amd64 and arm64 raw filenames;
 - requires the existing amd64 and arm64 archives;
 - requires `checksums.txt` to list every expected artifact;
+- rejects any uploadable artifact outside those four assets and `checksums.txt`;
+- requires each raw binary to be a statically linked ELF executable; and
 - rejects a release target other than `frostyard/fisherman`; and
 - rejects an unpinned `goreleaser-action` version such as `latest`.
 
@@ -84,13 +93,19 @@ Release publication is fail-closed. Tests, configuration validation, build,
 checksum generation, upload, or post-upload asset verification failures leave
 the workflow failed. A failed run must not be represented as a usable release.
 GoReleaser stages assets in a draft so partial uploads are not public. A failed
-draft is deleted before retrying the same immutable tag; the tag itself is not
-deleted, moved, or reused for different source. The workflow does not silently
-overwrite an existing published version.
+run can replace an existing draft for the same immutable tag because
+`replace_existing_draft: true` is configured; the tag itself is not deleted,
+moved, or reused for different source. The workflow does not silently overwrite
+an existing published version. In the rare case that publishing succeeds but
+the final post-publish API assertion fails, the workflow can report failure
+while the release is already public. Operators must inspect the release state
+and verified asset set, then recover manually rather than blindly retrying.
 
 Consumers verify downloaded bytes against their separately configured SHA-256
-before installation. `checksums.txt` is useful release metadata but is not a
-substitute for the consumer's independent digest pin.
+before installation. The publisher's remote check verifies expected asset names
+and checksum-manifest entries, not recomputed remote bytes. `checksums.txt` is
+useful release metadata but is not a substitute for the consumer's independent
+digest pin.
 
 ## Documentation
 
@@ -105,8 +120,8 @@ raw versioned assets from mutable GitHub release discovery URLs.
 - The release configuration names `frostyard/fisherman` as the GitHub owner.
 - The publication workflow uses a pinned GoReleaser version, verifies a draft's
   final asset set, and only then publishes it.
-- A test release or the first production release provides a directly
-  downloadable executable at an exact URL shaped like
+- The deferred first authorized live cut is a go-live gate and, when executed,
+  must provide a directly downloadable executable at an exact URL shaped like
   `https://github.com/frostyard/fisherman/releases/download/vX.Y.Z/fisherman_X.Y.Z_linux_amd64`.
 - A consumer can verify that executable using its independently recorded
   lowercase SHA-256 and execute it without archive extraction.
