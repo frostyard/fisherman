@@ -1,4 +1,5 @@
 .build/
+.worktrees/
 builddir/
 __pycache__/
 *.pyc
