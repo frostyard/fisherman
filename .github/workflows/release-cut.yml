@@ -38,6 +38,13 @@ jobs:
           # (GITHUB_TOKEN-created tags/commits don't re-trigger workflows)
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
+      - name: Verify release source branch
+        run: |
+          [[ $GITHUB_REF == refs/heads/dev ]] || {
+            echo "::error::Cut Release must be dispatched from dev, got $GITHUB_REF" >&2
+            exit 1
+          }
+
       - name: Compute next version
         id: version
         run: |

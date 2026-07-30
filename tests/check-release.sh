@@ -5,6 +5,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 goreleaser_bin=${GORELEASER:-goreleaser}
 validate_workflow="$repo_root/.github/workflows/release-validate.yml"
 publish_workflow="$repo_root/.github/workflows/release-publish.yml"
+cut_workflow="$repo_root/.github/workflows/release-cut.yml"
 goreleaser_action='goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94'
 goreleaser_version='version: v2.17.1'
 cd "$repo_root"
@@ -56,6 +57,11 @@ grep -Fq 'gh release download "$tag"' "$publish_workflow" || {
 # shellcheck disable=SC2016 # Search for the workflow's literal shell fragment.
 grep -Fq 'gh release edit "$tag" --repo "$repo" --draft=false' "$publish_workflow" || {
   echo "release publication must publish only the verified draft" >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Search for the workflow's literal shell fragment.
+grep -Fq '[[ $GITHUB_REF == refs/heads/dev ]]' "$cut_workflow" || {
+  echo "release cut must refuse non-dev dispatches" >&2
   exit 1
 }
 

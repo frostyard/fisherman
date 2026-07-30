@@ -184,6 +184,27 @@ generated OCI runtime version. The Bootcrew lint gate runs
 tests install Ubuntu's apt-provided Podman instead of using the runner-bundled
 version.
 
+## Releases
+
+Frostyard releases are published from version tags at
+[`frostyard/fisherman`](https://github.com/frostyard/fisherman/releases).
+Run the `Cut Release` workflow from the `dev` branch with the intended semver
+bump. `RELEASE_TOKEN` must be configured so the tag push triggers the separate
+publisher; the publisher tests the tagged source, stages a draft, verifies all
+remote assets, and then makes the release public.
+
+Each `vX.Y.Z` release provides directly executable Linux assets:
+
+- `fisherman_X.Y.Z_linux_amd64`
+- `fisherman_X.Y.Z_linux_arm64`
+
+The matching `.tar.gz` archives remain available. `checksums.txt` covers both
+raw binaries and both archives. Consumers must pin an exact versioned URL such
+as
+`https://github.com/frostyard/fisherman/releases/download/vX.Y.Z/fisherman_X.Y.Z_linux_amd64`
+and independently record and verify its lowercase SHA-256; do not use GitHub's
+mutable `/releases/latest/` discovery URL as an installation source.
+
 ## License
 
 GPL-3.0-only
