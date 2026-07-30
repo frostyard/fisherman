@@ -1,0 +1,36 @@
+name: Validate Release
+
+on:
+  pull_request:
+    branches: [dev, prod]
+    paths:
+      - '.goreleaser.yml'
+      - '.github/workflows/release-cut.yml'
+      - '.github/workflows/release-publish.yml'
+      - '.github/workflows/release-validate.yml'
+      - 'tests/check-release.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  release-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fisherman/go.mod
+          cache: true
+          cache-dependency-path: fisherman/go.sum
+      - name: Install pinned GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          install-only: true
+      - name: Validate release contract
+        run: tests/check-release.sh

@@ -1,10 +1,5 @@
 version: 2
 
-before:
-  hooks:
-    - go mod tidy
-  dir: fisherman
-
 builds:
   - id: fisherman
     dir: fisherman
@@ -27,6 +22,7 @@ archives:
   - id: fisherman
     name_template: "fisherman_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
+      - binary
       - tar.gz
     files:
       - README.md
@@ -47,9 +43,10 @@ changelog:
 
 release:
   github:
-    owner: tuna-os
+    owner: frostyard
     name: fisherman
-  draft: false
+  draft: true
+  replace_existing_draft: true
   prerelease: auto
   header: |
     ## fisherman {{ .Tag }}

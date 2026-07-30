@@ -184,6 +184,36 @@ generated OCI runtime version. The Bootcrew lint gate runs
 tests install Ubuntu's apt-provided Podman instead of using the runner-bundled
 version.
 
+## Releases
+
+Frostyard releases are published from version tags at
+[`frostyard/fisherman`](https://github.com/frostyard/fisherman/releases).
+Run the `Cut Release` workflow from the `dev` branch with the intended semver
+bump. The workflow deliberately uses `RELEASE_TOKEN || GITHUB_TOKEN`:
+`RELEASE_TOKEN` lets the pushed tag trigger the separate publisher, while the
+fallback still permits the cut. Without `RELEASE_TOKEN`, GitHub can accept the
+tag push but suppress the downstream workflow, leaving a successfully pushed
+orphan tag with no release. Operators must verify that `Publish Release` starts
+for the new tag before treating a cut as complete.
+
+The publisher tests the tagged source, stages a draft, verifies the expected
+remote asset names and `checksums.txt` entries, and then makes the release
+public. It downloads `checksums.txt` for that check; it does not download and
+recompute every remote asset digest. The consumer's independently pinned
+digest remains the installation trust boundary.
+
+Each `vX.Y.Z` release provides directly executable Linux assets:
+
+- `fisherman_X.Y.Z_linux_amd64`
+- `fisherman_X.Y.Z_linux_arm64`
+
+The matching `.tar.gz` archives remain available. `checksums.txt` covers both
+raw binaries and both archives. Consumers must pin an exact versioned URL such
+as
+`https://github.com/frostyard/fisherman/releases/download/vX.Y.Z/fisherman_X.Y.Z_linux_amd64`
+and independently record and verify its lowercase SHA-256; do not use GitHub's
+mutable `/releases/latest/` discovery URL as an installation source.
+
 ## License
 
 GPL-3.0-only
