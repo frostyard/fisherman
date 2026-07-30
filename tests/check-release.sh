@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 goreleaser_bin=${GORELEASER:-goreleaser}
 validate_workflow="$repo_root/.github/workflows/release-validate.yml"
+publish_workflow="$repo_root/.github/workflows/release-publish.yml"
 goreleaser_action='goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94'
 goreleaser_version='version: v2.17.1'
 cd "$repo_root"
@@ -37,6 +38,24 @@ grep -Fq "$goreleaser_version" "$validate_workflow" || {
 }
 grep -Fq 'run: tests/check-release.sh' "$validate_workflow" || {
   echo "release validation must run the release contract" >&2
+  exit 1
+}
+grep -Fq "uses: $goreleaser_action" "$publish_workflow" || {
+  echo "release publication must pin goreleaser-action" >&2
+  exit 1
+}
+grep -Fq "$goreleaser_version" "$publish_workflow" || {
+  echo "release publication must pin GoReleaser v2.17.1" >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Search for the workflow's literal shell fragment.
+grep -Fq 'gh release download "$tag"' "$publish_workflow" || {
+  echo "release publication must download and verify remote checksums" >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Search for the workflow's literal shell fragment.
+grep -Fq 'gh release edit "$tag" --repo "$repo" --draft=false' "$publish_workflow" || {
+  echo "release publication must publish only the verified draft" >&2
   exit 1
 }
 
