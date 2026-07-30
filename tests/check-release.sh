@@ -3,6 +3,9 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 goreleaser_bin=${GORELEASER:-goreleaser}
+validate_workflow="$repo_root/.github/workflows/release-validate.yml"
+goreleaser_action='goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94'
+goreleaser_version='version: v2.17.1'
 cd "$repo_root"
 
 rm -rf dist
@@ -18,6 +21,22 @@ grep -Fxq '    name: fisherman' .goreleaser.yml || {
 }
 grep -Fxq '  draft: true' .goreleaser.yml || {
   echo "GoReleaser must stage a draft release" >&2
+  exit 1
+}
+[[ -f "$validate_workflow" ]] || {
+  echo "release validation workflow is missing" >&2
+  exit 1
+}
+grep -Fq "uses: $goreleaser_action" "$validate_workflow" || {
+  echo "release validation must pin goreleaser-action" >&2
+  exit 1
+}
+grep -Fq "$goreleaser_version" "$validate_workflow" || {
+  echo "release validation must pin GoReleaser v2.17.1" >&2
+  exit 1
+}
+grep -Fq 'run: tests/check-release.sh' "$validate_workflow" || {
+  echo "release validation must run the release contract" >&2
   exit 1
 }
 
