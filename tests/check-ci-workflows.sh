@@ -1,0 +1,34 @@
+#!/bin/bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ssh_workflow="$repo_root/.github/workflows/build-ssh-images.yml"
+boot_workflow="$repo_root/.github/workflows/bootcrew-vm.yml"
+
+if ! grep -q 'tests/check-ci-workflows.sh' "$boot_workflow"; then
+  echo "CI workflow contract check must run in CI" >&2
+  exit 1
+fi
+
+if grep -q 'ghcr.io/tuna-os/fisherman' "$ssh_workflow"; then
+  echo "SSH image publisher must use the current repository namespace" >&2
+  exit 1
+fi
+
+if ! grep -q 'IMAGE_NAMESPACE:.*frostyard/fisherman' "$ssh_workflow"; then
+  echo "SSH image workflow must declare the Frostyard package namespace" >&2
+  exit 1
+fi
+
+if [ "$(grep -c 'runtime = "runc"' "$boot_workflow")" -ne 2 ]; then
+  echo "required and advisory Bootcrew jobs must select runc" >&2
+  exit 1
+fi
+
+if [ "$(grep -c "podman info --format.*Host.OCIRuntime.Name" "$boot_workflow")" -ne 2 ] ||
+   [ "$(grep -Fc "[[ \$runtime == runc ]]" "$boot_workflow")" -ne 2 ]; then
+  echo "required and advisory Bootcrew jobs must verify runc selection" >&2
+  exit 1
+fi
+
+echo "CI workflow contracts passed"

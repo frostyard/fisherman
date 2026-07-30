@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Validate CI workflow contracts
+        run: tests/check-ci-workflows.sh
       - uses: actions/setup-go@v5
         with:
           go-version-file: fisherman/go.mod
@@ -122,6 +124,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y just socat
           just ci-install-tools
+      - name: Configure Podman OCI runtime
+        # GitHub runner 20260726 upgraded Podman to 5.8.4; its default crun
+        # rejects the generated OCI version. The bundled runc is compatible.
+        run: |
+          sudo install -d -m 0755 /etc/containers/containers.conf.d
+          printf '%s\n' '[engine]' 'runtime = "runc"' \
+            | sudo tee /etc/containers/containers.conf.d/99-fisherman-ci-runtime.conf >/dev/null
+          runtime=$(sudo podman info --format '{{.Host.OCIRuntime.Name}}')
+          [[ $runtime == runc ]] || {
+            echo "::error::Podman selected OCI runtime '$runtime', expected 'runc'" >&2
+            exit 1
+          }
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login -u "${{ github.actor }}" --password-stdin ghcr.io
       - name: Generate SSH keys
@@ -209,6 +223,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y just socat
           just ci-install-tools
+      - name: Configure Podman OCI runtime
+        # Keep advisory jobs on the same known-compatible runtime as canaries.
+        run: |
+          sudo install -d -m 0755 /etc/containers/containers.conf.d
+          printf '%s\n' '[engine]' 'runtime = "runc"' \
+            | sudo tee /etc/containers/containers.conf.d/99-fisherman-ci-runtime.conf >/dev/null
+          runtime=$(sudo podman info --format '{{.Host.OCIRuntime.Name}}')
+          [[ $runtime == runc ]] || {
+            echo "::error::Podman selected OCI runtime '$runtime', expected 'runc'" >&2
+            exit 1
+          }
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login -u "${{ github.actor }}" --password-stdin ghcr.io
       - name: Generate SSH keys

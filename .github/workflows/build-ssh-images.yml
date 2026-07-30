@@ -17,6 +17,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: frostyard/fisherman
 
 jobs:
   setup:
@@ -81,10 +82,10 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ matrix.image.base_image }}
           tags: |
-            ${{ env.REGISTRY }}/tuna-os/fisherman/${{ matrix.image.name }}:ssh-enabled
-            ${{ env.REGISTRY }}/tuna-os/fisherman/${{ matrix.image.name }}:ssh-enabled-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image.name }}:ssh-enabled
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image.name }}:ssh-enabled-${{ github.sha }}
 
       - name: Image built and pushed
         run: |
-          echo "✅ Built: ${{ env.REGISTRY }}/tuna-os/fisherman/${{ matrix.image.name }}:ssh-enabled"
+          echo "✅ Built: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image.name }}:ssh-enabled"
           echo "   Base: ${{ matrix.image.base_image }}"
