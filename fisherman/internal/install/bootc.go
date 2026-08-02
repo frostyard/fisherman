@@ -991,6 +991,8 @@ func skopeoExportOCI(image, destDir, tmpdir string) error {
 
 	skopeoArgs := []string{
 		"copy",
+		// OCI layouts cannot store transport signatures; this is a local cache.
+		"--remove-signatures",
 		containersStorageSource(image),
 		"oci:" + destDir,
 	}
