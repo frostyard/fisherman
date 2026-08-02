@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🐛 Bug Fixes
 
+- **Signed OCI exports**: Drop source transport signatures when exporting a
+  composefs image to a local OCI layout, which cannot store them.
 - **OCI layout for non-composefs installs**: Non-composefs images (bluefin, lts,
   lts-hwe) now export to an OCI layout at scratch and use `--source-imgref oci:...`
   for `bootc install to-filesystem`. The previous VFS squash path corrupted ostree

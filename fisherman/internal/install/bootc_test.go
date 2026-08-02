@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -719,5 +720,42 @@ func TestBootcInstall_SecureComposefsExportsVerifiedScratchStore(t *testing.T) {
 	}
 	if !strings.Contains(string(podmanCalls), "--signature-policy /policy.json pull ghcr.io/frostyard/cayo@sha256:verified") {
 		t.Fatalf("secure pull did not use restrictive policy:\n%s", podmanCalls)
+	}
+}
+
+func TestSkopeoExportOCI_RemovesSignatures(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "skopeo.log")
+	skopeoPath := filepath.Join(tmpDir, "skopeo")
+	if err := os.WriteFile(skopeoPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+logPath+"\"\n"), 0o755); err != nil {
+		t.Fatalf("writing fake skopeo: %v", err)
+	}
+
+	// Prevent a test run as root from bind-mounting over the host's /var/tmp.
+	for _, name := range []string{"mount", "umount"} {
+		path := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+			t.Fatalf("writing fake %s: %v", name, err)
+		}
+	}
+
+	oldPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", tmpDir+":"+oldPath); err != nil {
+		t.Fatalf("setting PATH: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+
+	destDir := filepath.Join(tmpDir, "oci-cache")
+	scratch := filepath.Join(tmpDir, "scratch")
+	if err := install.DefaultSkopeoExportOCI("ghcr.io/frostyard/cayo:test", destDir, scratch); err != nil {
+		t.Fatalf("DefaultSkopeoExportOCI() error = %v", err)
+	}
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("reading skopeo arguments: %v", err)
+	}
+	if !strings.Contains(string(args), "--remove-signatures") {
+		t.Fatalf("skopeo arguments missing --remove-signatures: %q", args)
 	}
 }
