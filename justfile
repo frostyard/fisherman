@@ -49,7 +49,7 @@ build-ssh-enabled-image IMAGE:
     -f scripts/Containerfile.ssh-enable .
   
   echo "✅ Built SSH-enabled image locally: $TEMP_TAG"
-  echo "For CI, SSH-enabled images are hosted at ghcr.io/tuna-os/fisherman/<image>:ssh-enabled"
+  echo "For CI, SSH-enabled images are hosted at ghcr.io/frostyard/fisherman/<image>:ssh-enabled"
 
 # Build debian-bootc with SSH pre-installed (Containerfile approach)
 build-debian-bootc-ssh:
@@ -276,9 +276,14 @@ bootcrew-ci-test IMAGE_JSON:
   
   DISK_FILE="{{ CI_ARTIFACTS }}/bootcrew-${IMAGE_NAME}-disk.img"
   
-  # SSH-enabled images are pre-built and pushed to: ghcr.io/tuna-os/fisherman/<image>:ssh-enabled
+  # SSH-enabled images are pre-built by build-ssh-images.yml and pushed to
+  # ghcr.io/frostyard/fisherman/<image>:ssh-enabled. This namespace MUST match
+  # that workflow's IMAGE_NAMESPACE: it read ghcr.io/tuna-os/... (the upstream
+  # fork) while the workflow pushed to frostyard, and the mismatch was invisible
+  # only because the fork's images happened to exist under the old names. Any
+  # image name this repo introduces itself fails to pull.
   # LUKS variants reuse the base image's ssh-enabled tag via ssh_image_name.
-  SSH_IMAGE="ghcr.io/tuna-os/fisherman/${SSH_NAME}:ssh-enabled"
+  SSH_IMAGE="ghcr.io/frostyard/fisherman/${SSH_NAME}:ssh-enabled"
   
   echo "Using pre-built SSH-enabled image: $SSH_IMAGE"
   

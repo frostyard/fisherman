@@ -1,187 +1,100 @@
-# Bootcrew CI regression test matrix.
-# Used by bootcrew-fast.yml (PR gate, disk-ops), bootcrew-vm.yml (PR gate, VM boot),
-# and bootcrew-nightly.yml (full install).
-# Add new images here; all workflows pick them up automatically.
-# 
-# vm_boot: true — include in bootcrew-vm.yml for E2E VM boot tests on every PR
-#          false (default) — skip in VM boot tests (reserved for nightly + disk-ops)
-# required: true — failure of this image fails the workflow (use for canary
-#          images that exercise each install backend). Required canaries:
-#          - dakota:        composefs-backend + systemd-boot
-#          - centos-bootc:  ostree-backend + grub2
-#          Other vm_boot images run advisory: their failures show up in the
-#          job summary but do not fail the workflow. Frees us from chasing
-#          per-image flakes while still keeping signal on the backends that
-#          matter.
+# Fisherman CI regression test matrix.
+# Used by bootcrew-vm.yml (PR gate, VM boot) and bootcrew-nightly.yml (full
+# install). Add new images here; the workflows pick them up automatically.
+#
+# vm_boot: true  — include in bootcrew-vm.yml E2E VM boot tests on every PR
+#          false — skip in VM boot (reserved for nightly)
+# required: true — failure fails the workflow. Reserve for canaries that
+#          exercise an install backend Frostyard actually ships.
+#          Everything else runs advisory: failures appear in the job summary
+#          without failing the workflow.
+#
+# Scope note (2026-08-05): this matrix previously carried the upstream fork's
+# images — bootcrew, tuna-os, ublue, centos and projectbluefin — none of which
+# Frostyard ships. They are removed. Their practical effect had become negative:
+# the advisory legs failed persistently on SSH timeouts, and a check that is
+# always red carries no information, so nobody read it.
+#
+# Consequences worth knowing:
+#   - The ostree + grub2 canary (centos-bootc) is gone. Frostyard installs are
+#     composefs + systemd-boot everywhere, so nothing shipped exercises that
+#     backend. Fisherman still SUPPORTS it; it is simply no longer covered here.
+#     Re-add a canary if that support is meant to stay guaranteed.
+#   - The old required canary named "dakota" pulled ghcr.io/projectbluefin/dakota,
+#     which is upstream Bluefin's image, not Frostyard's Dakota installer media.
+#     Frostyard's Dakota ISO is built from Snow, so frostyard-snow is the
+#     equivalent canary.
+#
+# These entries use the :mechanics tags, NOT :latest, and that is a hard
+# requirement rather than a preference. A secure (:latest) image ships a
+# MOK-signed UKI with composefs= baked in, pinned to the digest of the exact
+# image it was assembled from. This harness derives an SSH-enabled variant of
+# every vm_boot image so it can log in and verify the boot -- and that
+# derivation changes the composefs digest, so bootc refuses the signed UKI:
+#
+#   Setting up UKI boot: The UKI has the wrong composefs= parameter
+#   (is 'sha512:c598f2e1...', should be 'sha512:b507c1e4...')
+#
+# That refusal is the security property working, not a defect: a secure image
+# is not derivable, on purpose. Mechanics images carry no signed UKI binding,
+# which is exactly why they exist. Install MECHANICS is what this matrix tests;
+# the secure path is covered by snosi's Task 9 harness, which installs the
+# unmodified signed image through the real Dakota media.
+#
+# Do not "fix" a future UKI mismatch here by switching back to :latest.
 images:
-  - name: dakota
-    image: ghcr.io/projectbluefin/dakota:latest
-    filesystem: ext4
-    composefs_backend: true
-    bootloader: systemd
-    unified_storage: false
-    selinux_disabled: false
-    flatpaks: []
-    vm_boot: true  # PRIMARY PRODUCTION IMAGE - critical to test on every PR
-    required: true # composefs + systemd-boot canary
-    build_ssh_image: true
-
-  - name: bluefin-lts
-    image: ghcr.io/ublue-os/bluefin:lts
-    filesystem: xfs
-    composefs_backend: false
-    unified_storage: false
-    selinux_disabled: false
-    flatpaks: []
-    vm_boot: false
-
-  - name: centos-bootc
-    image: quay.io/centos-bootc/centos-bootc:c10s
-    filesystem: xfs
-    composefs_backend: false
-    unified_storage: false
-    selinux_disabled: false
-    flatpaks: []
-    vm_boot: true  # ostree backend verification
-    required: true # ostree + grub2 canary
-    build_ssh_image: true
-
-  - name: yellowfin-gnome50
-    image: ghcr.io/tuna-os/yellowfin:gnome50
-    filesystem: xfs
-    composefs_backend: false
-    unified_storage: false
-    selinux_disabled: true
-    flatpaks:
-      - org.mozilla.firefox
-    vm_boot: true   # exercises Flatpak-copy + installer-app-exclusion (PR #1)
-    build_ssh_image: true
-
-  - name: ubuntu-bootc
-    image: ghcr.io/bootcrew/ubuntu-bootc:latest
-    filesystem: xfs
-    composefs_backend: true
-    unified_storage: false
-    selinux_disabled: false
-    flatpaks: []
-    vm_boot: false  # TODO: bootcrew image broken, find or create working ubuntu-bootc image
-
-  # gnomeos-bootc disabled: consistently fails with missing blob in containers-storage
-  # (sha256:6d2d10...) — likely a broken layer in the ghcr.io/bootcrew/gnomeos-bootc image.
-  # Re-enable once upstream fixes the image.
-  # - name: gnomeos-bootc
-  #   image: ghcr.io/bootcrew/gnomeos-bootc:latest
-  #   filesystem: xfs
-  #   composefs_backend: true
-  #   unified_storage: false
-  #   selinux_disabled: false
-
-  - name: opensuse-bootc
-    image: ghcr.io/bootcrew/opensuse-bootc:latest
-    filesystem: xfs
-    composefs_backend: true
-    unified_storage: false
-    selinux_disabled: false
-    flatpaks: []
-    vm_boot: false
-
-  - name: arch-bootc
-    image: ghcr.io/bootcrew/arch-bootc:latest
-    filesystem: xfs
-    composefs_backend: true
-    bootloader: systemd
-    unified_storage: false
-    selinux_disabled: false
-    flatpaks: []
-    vm_boot: true  # composefs backend verification
-    build_ssh_image: true
-
-  # LUKS variants — vm_boot only (nightly excluded: nightly patches root=/dev/vdaX which is wrong for LUKS)
-  - name: dakota-luks
-    image: ghcr.io/projectbluefin/dakota:latest
-    ssh_image_name: dakota
-    filesystem: ext4
-    composefs_backend: true
-    bootloader: systemd
-    unified_storage: false
-    selinux_disabled: false
-    flatpaks: []
-    luks: true
-    luks_passphrase: "bootcrew-luks-test"
-    vm_timeout: 800
-    nightly: false
-    vm_boot: true
-
-  - name: arch-bootc-luks-xfs
-    image: ghcr.io/bootcrew/arch-bootc:latest
-    ssh_image_name: arch-bootc
-    filesystem: xfs
-    composefs_backend: true
-    bootloader: systemd
-    unified_storage: false
-    selinux_disabled: false
-    flatpaks: []
-    luks: true
-    luks_passphrase: "bootcrew-luks-test"
-    vm_timeout: 800
-    nightly: false
-    vm_boot: true
-
-  # Regression test for issue #38: composefs + btrfs + LUKS.
-  # The original bug occurred when scratch was on btrfs (live-ISO path, space-constrained /var).
-  # This entry tests btrfs+LUKS+composefs in CI (scratch is /var/fisherman-tmp on the runner, not
-  # btrfs, so does not reproduce the exact scratch-on-btrfs failure mode — but validates the
-  # LUKS+composefs install path against a btrfs target filesystem end-to-end).
-  - name: dakota-luks-btrfs
-    image: ghcr.io/projectbluefin/dakota:latest
-    ssh_image_name: dakota
-    filesystem: btrfs
-    composefs_backend: true
-    bootloader: systemd
-    unified_storage: false
-    selinux_disabled: false
-    flatpaks: []
-    luks: true
-    luks_passphrase: "bootcrew-luks-test"
-    vm_timeout: 800
-    nightly: false
-    vm_boot: true
-
-  # gentoo-bootc disabled: consistently fails with missing blob in containers-storage
-  # (sha256:2443e8...) — likely a broken layer in the ghcr.io/bootcrew/gentoo-bootc image.
-  # Re-enable once upstream fixes the image.
-  # - name: gentoo-bootc
-  #   image: ghcr.io/bootcrew/gentoo-bootc:latest
-  #   filesystem: xfs
-  #   composefs_backend: true
-  #   unified_storage: false
-  #   selinux_disabled: false
-
-  - name: debian-bootc
-    image: ghcr.io/bootcrew/debian-bootc:latest
-    filesystem: xfs
-    composefs_backend: true
-    bootloader: systemd
-    unified_storage: false
-    selinux_disabled: false
-    flatpaks: []
-    vm_boot: true  # composefs backend verification (using pre-built SSH image)
-    build_ssh_image: true
-
+  # Composefs + systemd-boot canary, and the payload Frostyard's Dakota
+  # installer media is built from.
   - name: frostyard-snow
-    image: ghcr.io/frostyard/snow:latest
+    image: ghcr.io/frostyard/snow:mechanics
     filesystem: btrfs
     composefs_backend: true
+    bootloader: systemd
     unified_storage: false
     selinux_disabled: false
     flatpaks: []
-    vm_boot: false
+    vm_boot: true
+    required: true
+    build_ssh_image: true
 
-  # frostyard-snowloaded disabled: image bundles an older libostree built without
-  # composefs support, but the Ubuntu 24.04 runner has the composefs kernel module
-  # loaded. libostree sees composefs available at runtime and tries to use it, then
-  # fails with "composefs: enabled at runtime, but support is not compiled in".
-  # Re-enable once the image ships a libostree with composefs compiled in.
+  # Server product. Same backend, much smaller, so it is the cheap early
+  # signal when something backend-level breaks.
+  - name: frostyard-cayo
+    image: ghcr.io/frostyard/cayo:mechanics
+    filesystem: btrfs
+    composefs_backend: true
+    bootloader: systemd
+    unified_storage: false
+    selinux_disabled: false
+    flatpaks: []
+    vm_boot: true
+    build_ssh_image: true
+
+  # LUKS + composefs + btrfs. This replaces the dakota-luks / dakota-luks-btrfs
+  # entries and is not optional coverage: it is exactly the shape the snosi
+  # secure install produces (encrypted root, composefs backend, systemd-boot),
+  # so it is the closest CI analogue to the production secure path.
+  - name: frostyard-snow-luks
+    image: ghcr.io/frostyard/snow:mechanics
+    ssh_image_name: frostyard-snow
+    filesystem: btrfs
+    composefs_backend: true
+    bootloader: systemd
+    unified_storage: false
+    selinux_disabled: false
+    flatpaks: []
+    luks: true
+    luks_passphrase: "fisherman-luks-test"
+    vm_timeout: 800
+    nightly: false
+    vm_boot: true
+
+  # frostyard-snowloaded disabled: the image bundles an older libostree built
+  # without composefs support, while the Ubuntu 24.04 runner has the composefs
+  # kernel module loaded. libostree sees composefs available at runtime, tries
+  # to use it, and fails with "composefs: enabled at runtime, but support is
+  # not compiled in". Re-enable once the image ships a libostree with composefs
+  # compiled in.
   # - name: frostyard-snowloaded
   #   image: ghcr.io/frostyard/snowloaded:latest
   #   filesystem: xfs

@@ -89,7 +89,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # ── Required canaries: composefs (dakota) + ostree (centos-bootc). ────────
+  # ── Required canaries: composefs + systemd-boot (frostyard-snow). ────────
   # Failure here fails the workflow. Treat these as the contract for what
   # fisherman must do on every PR.
   vm-boot-required:
@@ -164,8 +164,8 @@ jobs:
 
   # ── Single-check gate for branch protection. ─────────────────────────────
   # Add THIS check name ("required-canaries") to the protected-branch rules
-  # for prod/dev — it succeeds iff every required canary (dakota,
-  # centos-bootc) and the unit-test + lint jobs all passed. Using one gate
+  # for prod/dev — it succeeds iff every required canary (frostyard-snow)
+  # and the unit-test + lint jobs all passed. Using one gate
   # avoids having to enumerate every matrix permutation in branch
   # protection, which would break the moment we add or rename an image.
   required-canaries:
@@ -192,7 +192,7 @@ jobs:
 
   # ── Advisory images: failures show up in the workflow summary but do not
   # fail the run. Use this slot for images known to flake on upstream
-  # rebases (gnomeos, ubuntu-bootc, …). When one stabilises, promote it
+  # rebases. When one stabilises, promote it
   # by adding `required: true` in tests/bootcrew-matrix.yaml.
   vm-boot-advisory:
     name: advisory / ${{ matrix.image.name }}
