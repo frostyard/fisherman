@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -96,6 +97,16 @@ func DefaultOutput(name string, args ...string) ([]byte, error) {
 	name, args = HostArgs(name, args)
 	out, err := exec.Command(name, args...).Output()
 	if err != nil {
+		// Include stderr. .Output() captures it on ExitError, but the error's
+		// own message is only "exit status N", so wrapping without this makes
+		// every failure opaque: the caller sees the command line and a number
+		// and has to reproduce the invocation by hand to learn anything. That
+		// cost a full release cycle to diagnose once already.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return nil, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "),
+				err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
 		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return out, nil

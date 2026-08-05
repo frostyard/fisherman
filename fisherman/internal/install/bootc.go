@@ -692,10 +692,29 @@ func bootcViaContainer(opts Options) error {
 
 func computeSecureComposefsDigest(image, root, runRoot, driver string) (string, error) {
 	args := []string{}
+	// The store podman itself should use.
+	storePath := "/var/lib/containers/storage"
 	if root != "" {
 		args = append(args, "--root", root, "--runroot", runRoot, "--storage-driver", driver)
+		storePath = root
 	}
-	args = append(args, "run", "--rm", "--pull=never", image,
+	// bootc reads the store from INSIDE the container, where --root means
+	// nothing: it looks at the in-container default path and mounts the overlay
+	// itself. Two consequences, both required, neither optional:
+	//
+	//   --privileged  without it the mount is refused outright --
+	//                 "mount /var/lib/containers/storage/overlay: operation not
+	//                 permitted"
+	//   -v store:...  without it bootc resolves the in-container default path,
+	//                 which is the image's own empty store, and fails with
+	//                 "Opening image: reference [overlay@/var/lib/containers/
+	//                 storage...]: ... not known"
+	//
+	// Verified directly: --privileged alone still fails; --privileged plus this
+	// bind mount returns the digest.
+	args = append(args, "run", "--rm", "--pull=never", "--privileged",
+		"-v", storePath+":/var/lib/containers/storage",
+		image,
 		"bootc", "container", "compute-composefs-digest-from-storage", image)
 	out, err := runner.Output("podman", args...)
 	if err != nil {
