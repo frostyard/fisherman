@@ -24,11 +24,29 @@
 #     which is upstream Bluefin's image, not Frostyard's Dakota installer media.
 #     Frostyard's Dakota ISO is built from Snow, so frostyard-snow is the
 #     equivalent canary.
+#
+# These entries use the :mechanics tags, NOT :latest, and that is a hard
+# requirement rather than a preference. A secure (:latest) image ships a
+# MOK-signed UKI with composefs= baked in, pinned to the digest of the exact
+# image it was assembled from. This harness derives an SSH-enabled variant of
+# every vm_boot image so it can log in and verify the boot -- and that
+# derivation changes the composefs digest, so bootc refuses the signed UKI:
+#
+#   Setting up UKI boot: The UKI has the wrong composefs= parameter
+#   (is 'sha512:c598f2e1...', should be 'sha512:b507c1e4...')
+#
+# That refusal is the security property working, not a defect: a secure image
+# is not derivable, on purpose. Mechanics images carry no signed UKI binding,
+# which is exactly why they exist. Install MECHANICS is what this matrix tests;
+# the secure path is covered by snosi's Task 9 harness, which installs the
+# unmodified signed image through the real Dakota media.
+#
+# Do not "fix" a future UKI mismatch here by switching back to :latest.
 images:
   # Composefs + systemd-boot canary, and the payload Frostyard's Dakota
   # installer media is built from.
   - name: frostyard-snow
-    image: ghcr.io/frostyard/snow:latest
+    image: ghcr.io/frostyard/snow:mechanics
     filesystem: btrfs
     composefs_backend: true
     bootloader: systemd
@@ -42,7 +60,7 @@ images:
   # Server product. Same backend, much smaller, so it is the cheap early
   # signal when something backend-level breaks.
   - name: frostyard-cayo
-    image: ghcr.io/frostyard/cayo:latest
+    image: ghcr.io/frostyard/cayo:mechanics
     filesystem: btrfs
     composefs_backend: true
     bootloader: systemd
@@ -57,7 +75,7 @@ images:
   # secure install produces (encrypted root, composefs backend, systemd-boot),
   # so it is the closest CI analogue to the production secure path.
   - name: frostyard-snow-luks
-    image: ghcr.io/frostyard/snow:latest
+    image: ghcr.io/frostyard/snow:mechanics
     ssh_image_name: frostyard-snow
     filesystem: btrfs
     composefs_backend: true
