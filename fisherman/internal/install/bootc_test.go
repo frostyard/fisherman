@@ -718,7 +718,10 @@ func TestBootcInstall_SecureComposefsExportsVerifiedScratchStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(podmanCalls), "--signature-policy /policy.json pull ghcr.io/frostyard/cayo@sha256:verified") {
+	// `pull` first, then its flags, then the image. This assertion previously
+	// encoded the reverse and so passed against a command line podman rejects
+	// outright ("unknown flag: --signature-policy").
+	if !strings.Contains(string(podmanCalls), "pull --signature-policy /policy.json ghcr.io/frostyard/cayo@sha256:verified") {
 		t.Fatalf("secure pull did not use restrictive policy:\n%s", podmanCalls)
 	}
 }

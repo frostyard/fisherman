@@ -36,8 +36,34 @@ func TestComputeSecureComposefsDigest(t *testing.T) {
 
 func TestPodmanPullArgsIncludeSecurePolicyAndRedirectedStore(t *testing.T) {
 	got := podmanPullArgs("ghcr.io/frostyard/cayo@sha256:verified", "/store", "/runstore", "overlay", "/policy.json")
-	want := []string{"--root", "/store", "--runroot", "/runstore", "--storage-driver", "overlay", "--signature-policy", "/policy.json", "pull", "ghcr.io/frostyard/cayo@sha256:verified"}
+	// --signature-policy must follow `pull`: it is a subcommand flag, not a
+	// global podman option. This expectation previously asserted the opposite
+	// order, so the test passed while the command line it locked in could not
+	// execute at all -- podman exits 125 with "unknown flag". Since policyPath
+	// is set only on the secure install path, that broke every secure install
+	// and nothing else, which is why it went unnoticed.
+	want := []string{"--root", "/store", "--runroot", "/runstore", "--storage-driver", "overlay", "pull", "--signature-policy", "/policy.json", "ghcr.io/frostyard/cayo@sha256:verified"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("pull args = %q, want %q", got, want)
+	}
+}
+
+// The subcommand must precede its flags, and the image must come last.
+func TestPodmanPullArgsPutSubcommandBeforeItsFlags(t *testing.T) {
+	got := podmanPullArgs("img", "", "", "", "/policy.json")
+	pull, policy := -1, -1
+	for i, a := range got {
+		switch a {
+		case "pull":
+			pull = i
+		case "--signature-policy":
+			policy = i
+		}
+	}
+	if pull == -1 || policy == -1 || policy < pull {
+		t.Fatalf("--signature-policy must follow pull, got %q", got)
+	}
+	if got[len(got)-1] != "img" {
+		t.Fatalf("image must be the final argument, got %q", got)
 	}
 }
