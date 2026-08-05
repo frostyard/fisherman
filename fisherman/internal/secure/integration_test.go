@@ -110,7 +110,7 @@ func TestValidateVersionsWarnsAboveFloorButUnvalidated(t *testing.T) {
 
 func TestVerifyInstalledRejectsComposefsMismatch(t *testing.T) {
 	root := installedFixture(t, "?"+strings.Repeat("a", 128))
-	if _, err := secure.VerifyInstalled(root, &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}, strings.Repeat("b", 128)); err == nil {
+	if _, err := secure.VerifyInstalled(root, root, &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}, strings.Repeat("b", 128)); err == nil {
 		t.Fatal("mismatched composefs digest accepted")
 	}
 }
@@ -125,13 +125,13 @@ func TestVerifyInstalledRequiresCanonicalComposefsDigests(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := installedFixture(t, test.observed)
-			if _, err := secure.VerifyInstalled(root, &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}, test.expected); err == nil {
+			if _, err := secure.VerifyInstalled(root, root, &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}, test.expected); err == nil {
 				t.Fatal("malformed composefs digest accepted")
 			}
 		})
 	}
 	root := installedFixture(t, "?"+valid)
-	artifacts, err := secure.VerifyInstalled(root, &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}, valid)
+	artifacts, err := secure.VerifyInstalled(root, root, &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}, valid)
 	if err != nil || artifacts.ComposefsID != valid {
 		t.Fatalf("ComposefsID = %q, %v", artifacts.ComposefsID, err)
 	}
@@ -156,7 +156,7 @@ func TestAcceptImagePinsDigestAndRequiresSecureCapability(t *testing.T) {
 func TestVerifyInstalledExtractsInstalledPCRKeyAndRejectsRawBLS(t *testing.T) {
 	root := installedFixture(t, "?"+strings.Repeat("a", 128))
 	contract := &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}
-	if _, err := secure.VerifyInstalled(root, contract, strings.Repeat("a", 128)); err != nil {
+	if _, err := secure.VerifyInstalled(root, root, contract, strings.Repeat("a", 128)); err != nil {
 		t.Fatal(err)
 	}
 }

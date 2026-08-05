@@ -352,7 +352,12 @@ func AcceptImage(reference, cosignKey string) (string, error) {
 
 // VerifyInstalled validates every installed BLS entry, extracts the PCR public
 // key from its Type #2 UKI, and compares it to the immutable contract key.
-func VerifyInstalled(root string, contract *Contract, expectedComposefs string) (*InstalledArtifacts, error) {
+// VerifyInstalled validates the installed secure artifacts. It reads two roots
+// deliberately: boot/efi and var really are on the installed target, while the
+// contract-referenced identities (PCR public key, MOK certificate) live under
+// usr/ and therefore come from imageRoot -- a composefs deployment presents no
+// merged root under the target mount. See ExtractSecureImageRoot.
+func VerifyInstalled(root, imageRoot string, contract *Contract, expectedComposefs string) (*InstalledArtifacts, error) {
 	if !install.ValidComposefsDigest(expectedComposefs) {
 		return nil, fmt.Errorf("verified deployment has an invalid composefs identity")
 	}
@@ -365,7 +370,7 @@ func VerifyInstalled(root string, contract *Contract, expectedComposefs string) 
 			return nil, fmt.Errorf("required ESP binary %s: %w", required, err)
 		}
 	}
-	rootfsKey, err := os.ReadFile(filepath.Join(root, strings.TrimPrefix(contract.PCRPublicKey, "/")))
+	rootfsKey, err := os.ReadFile(filepath.Join(imageRoot, strings.TrimPrefix(contract.PCRPublicKey, "/")))
 	if err != nil {
 		return nil, fmt.Errorf("reading contract PCR public key: %w", err)
 	}
@@ -441,6 +446,13 @@ func RestageMOK(root string, contract *Contract, recoveryKey, mokPasswordFile, b
 	if contract == nil || contract.MOKCertificate == "" {
 		return fmt.Errorf("validating installed MOK certificate path")
 	}
+	// NOTE: this reads from the installed target, which works only for a
+	// merged-root layout. On a composefs deployment /usr is not a directory
+	// tree under the target, so this has the same limitation the install path
+	// hit -- it would need an image root the same way. Left as-is because this
+	// is the standalone `secure-restage-mok` recovery operation, not the
+	// install path, and changing its interface belongs with a fix that can be
+	// tested against a real installed system.
 	certificate := filepath.Join(root, strings.TrimPrefix(contract.MOKCertificate, "/"))
 	if _, err := os.Stat(certificate); err != nil {
 		return fmt.Errorf("validating installed MOK certificate: %w", err)
@@ -451,7 +463,10 @@ func RestageMOK(root string, contract *Contract, recoveryKey, mokPasswordFile, b
 // RepairESP reconstructs only the MOK-signed systemd-boot second stage from
 // the authenticated deployment. Shim and MokManager are deliberately checked,
 // never replaced.
-func RepairESP(root, mokCertificate string) error {
+// RepairESP replaces the ESP second stage. The ESP is on the installed target;
+// the MOK certificate and the signed second-stage source live under usr/ and so
+// come from imageRoot. See ExtractSecureImageRoot.
+func RepairESP(root, imageRoot, mokCertificate string) error {
 	boot := filepath.Join(root, "boot/efi/EFI/BOOT")
 	for _, name := range []string{"BOOTX64.EFI", "mmx64.efi"} {
 		if _, err := os.Stat(filepath.Join(boot, name)); err != nil {
@@ -478,8 +493,8 @@ func RepairESP(root, mokCertificate string) error {
 	if mokCertificate == "" || !strings.HasPrefix(mokCertificate, "/") {
 		return fmt.Errorf("validating installed MOK certificate path")
 	}
-	certificate := filepath.Join(root, strings.TrimPrefix(mokCertificate, "/"))
-	source := filepath.Join(root, "usr/lib/snosi/bootc/systemd-bootx64.efi")
+	certificate := filepath.Join(imageRoot, strings.TrimPrefix(mokCertificate, "/"))
+	source := filepath.Join(imageRoot, "usr/lib/snosi/bootc/systemd-bootx64.efi")
 	if err := runner.Run("sbverify", "--cert", certificate, source); err != nil {
 		return fmt.Errorf("verifying MOK-signed systemd-boot source: %w", err)
 	}

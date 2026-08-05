@@ -30,8 +30,14 @@ type Contract struct {
 }
 
 // LoadInstalledContract reads and validates the immutable deployed contract.
-func LoadInstalledContract(targetRoot string) (*Contract, error) {
-	data, err := os.ReadFile(filepath.Join(targetRoot, "usr/lib/snosi/bootc-secure.json"))
+// LoadInstalledContract reads the schema-1 contract from imageRoot -- a
+// directory holding the image's usr/lib/snosi subtree -- NOT from the installed
+// target. A composefs deployment presents no merged root under the target
+// mount, so <target>/usr/... does not exist; the deployment's composefs digest
+// is verified immediately beforehand and bootc pins the deployment to it, so
+// the image and the deployment are identical by construction.
+func LoadInstalledContract(imageRoot string) (*Contract, error) {
+	data, err := os.ReadFile(filepath.Join(imageRoot, "usr/lib/snosi/bootc-secure.json"))
 	if err != nil {
 		return nil, fmt.Errorf("reading installed secure contract: %w", err)
 	}

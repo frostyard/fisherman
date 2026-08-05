@@ -144,6 +144,12 @@ type Options struct {
 	// SecureInstall selects the explicit schema-1 Type #2 installation args.
 	// It must be set only after recipe and deployed-contract validation.
 	SecureInstall bool
+	// SecureImageRoot, when set, receives the directory into which the image's
+	// secure artifact subtree was extracted. Out-param in the same style as
+	// SecureComposefsDigest: only this package knows the store paths the
+	// extraction needs.
+	SecureImageRoot *string
+
 	// SecurePolicyPath is the restrictive containers policy used for the
 	// digest-pinned secure pull. Empty preserves generic Podman behavior.
 	SecurePolicyPath string
@@ -521,6 +527,14 @@ func bootcViaContainer(opts Options) error {
 				nonComposefsDriver, nonComposefsRoot, nonComposefsRunRoot, bareImageRef(opts.SourceImgref))
 		}
 		if err := exportComposefsOCIIfNeeded(opts, exportRef); err != nil {
+			return err
+		}
+	}
+	if opts.SecureInstall && opts.SecureImageRoot != nil && *opts.SecureImageRoot != "" {
+		// Ordered deliberately: this runs alongside the digest computation, so
+		// the artifacts and the identity they are validated against come from
+		// the same store in the same moment.
+		if err := ExtractSecureImageRoot(opts.SourceImgref, composefsRoot, composefsRunRoot, composefsDriver, *opts.SecureImageRoot); err != nil {
 			return err
 		}
 	}
