@@ -361,6 +361,27 @@ func BootcInstall(opts Options) error {
 	return bootcDirect(opts)
 }
 
+// writeLocalTransportPolicy stages a containers policy that accepts only the
+// local oci: and containers-storage: transports and rejects everything else.
+// It is mounted into the bootc install container so a hardened image's own
+// reject-by-default policy cannot refuse the OCI layout fisherman just exported
+// for it. See the call site for why the layout cannot be signature-verified.
+func writeLocalTransportPolicy(scratch string) (string, error) {
+	const policy = `{
+  "default": [{"type": "reject"}],
+  "transports": {
+    "oci": {"": [{"type": "insecureAcceptAnything"}]},
+    "containers-storage": {"": [{"type": "insecureAcceptAnything"}]}
+  }
+}
+`
+	path := filepath.Join(scratch, "install-policy.json")
+	if err := os.WriteFile(path, []byte(policy), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func exportComposefsOCIIfNeeded(opts Options, sourceImgref string) error {
 	// Composefs always requires OCI layout for raw blobs.
 	// Non-composefs only needs it in container mode with overlay redirect.
@@ -595,6 +616,30 @@ func bootcViaContainer(opts Options) error {
 		}
 		podmanArgs = append(podmanArgs,
 			"-v", ociCacheHost+":"+containerOCICachePath+":ro")
+
+		// bootc inside the container opens oci:/run/fisherman/oci-cache, and a
+		// hardened image's own /etc/containers/policy.json rejects it:
+		//
+		//   Opening image oci:/run/fisherman/oci-cache: ... is rejected by policy.
+		//
+		// snosi's schema-1 policy is `reject` by default with an exception only
+		// for the containers-storage transport. The local OCI layout needs the
+		// same treatment, and cannot be handled any other way: exporting to an
+		// OCI layout DROPS signatures by design, so the layout is unverifiable
+		// by construction. Verification happens at pull time under
+		// SecurePolicyPath; the layout is a post-verification artifact of an
+		// image that already passed.
+		//
+		// The mounted policy is narrower than the image's, not broader: it
+		// accepts the two local transports and rejects everything else,
+		// including any `docker` pull. It applies to this one container
+		// invocation and changes nothing about what an installed system ships.
+		if policyPath, policyErr := writeLocalTransportPolicy(scratch); policyErr != nil {
+			progress.Info(fmt.Sprintf("warning: could not stage install policy (%v); relying on the image's own policy", policyErr))
+		} else {
+			podmanArgs = append(podmanArgs,
+				"-v", policyPath+":/etc/containers/policy.json:ro")
+		}
 	} else {
 		podmanArgs = append(podmanArgs, "-v", scratch+":/var/tmp:z")
 	}
