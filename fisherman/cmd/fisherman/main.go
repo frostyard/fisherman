@@ -368,13 +368,24 @@ func main() {
 	if err := validateSecureRecoveryKey(r); err != nil {
 		fatal("invalid secure recovery credential: %v", err)
 	}
+	// Declared here so the detected versions survive to the provenance record
+	// written much later in this function.
+	var secureVersions secure.VersionResult
 	if r.SecureInstall != nil {
 		luksMapper = "root"
 		if err := secure.ValidateDiskSize(r.Disk); err != nil {
 			fatal("secure target capacity: %v", err)
 		}
-		if err := secure.ValidateVersions(); err != nil {
+		secureVersions, err = secure.ValidateVersions()
+		if err != nil {
 			fatal("secure installer prerequisites: %v", err)
+		}
+		// Above-floor but unvalidated combinations install and warn. Silence
+		// here would mean the relaxation from exact pins to floors quietly
+		// removed the signal that the stack moved.
+		for _, warning := range secureVersions.Warnings {
+			fmt.Fprintf(os.Stderr, "fisherman: warning: %s\n", warning)
+			progress.Secure("version_unvalidated", warning)
 		}
 		if _, err := os.Stat("/etc/containers/policy.json"); err != nil {
 			fatal("secure OCI policy: %v", err)
@@ -1070,7 +1081,11 @@ func main() {
 			Assembly: secureContract.Assembly.Compatibility, Composefs: secureArtifacts.ComposefsID, UKIHash: secureArtifacts.UKIHash,
 			MOKHash: secure.PublicFingerprint(mokCertificate), PCRHash: secure.PublicFingerprint(secureArtifacts.PCRPublicKey),
 			ESPPartUUID: espPartUUID, LUKSUUID: activeLuksUUID, TPMToken: tokenID,
-			Versions:  map[string]string{"bootc": secureContract.Installer.MinimumVersions.Bootc, "cosign": secureContract.Installer.MinimumVersions.Cosign, "systemd": secureContract.Installer.MinimumVersions.Systemd},
+			// DETECTED versions, not the contract's declared floors. Recording
+			// the floors meant provenance answered "what did the contract ask
+			// for", which is already in the contract; the question worth being
+			// able to answer afterwards is "what actually ran".
+			Versions:  secureVersions.Detected,
 			Completed: time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			fatal("writing secure install provenance: %v", err)
