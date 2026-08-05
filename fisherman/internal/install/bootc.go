@@ -1173,10 +1173,17 @@ func podmanPullArgs(image, root, runRoot, storageDriver, policyPath string) []st
 	if storageDriver != "" {
 		podmanArgs = append(podmanArgs, "--storage-driver", storageDriver)
 	}
+	podmanArgs = append(podmanArgs, "pull")
+	// --signature-policy belongs to the `pull` SUBCOMMAND, not to podman's
+	// global flags. Emitting it before the subcommand makes podman exit 125
+	// with "unknown flag: --signature-policy", which surfaces only as an
+	// opaque exit status from the caller. Because policyPath is set exclusively
+	// on the secure install path, this broke every secure install and nothing
+	// else.
 	if policyPath != "" {
 		podmanArgs = append(podmanArgs, "--signature-policy", policyPath)
 	}
-	podmanArgs = append(podmanArgs, "pull", image)
+	podmanArgs = append(podmanArgs, image)
 	return podmanArgs
 }
 
