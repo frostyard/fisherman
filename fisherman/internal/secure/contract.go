@@ -10,8 +10,14 @@ import (
 )
 
 const (
-	Schema              = 1
-	MinimumESPBytes     = uint64(2147483648)
+	Schema = 1
+	// 1 GiB, matching snosi's normative contract
+	// (docs/bootc-secure-install-contract.md: "at least 1073741824 bytes") and
+	// the schema-1 JSON every secure image ships. This was 2147483648 -- double
+	// the contract -- which made Validate() reject the contract the images
+	// actually carry, and separately would have refused a conforming 1 GiB ESP
+	// at install time.
+	MinimumESPBytes     = uint64(1073741824)
 	MinimumDiskBytes    = uint64(32212254720)
 	CapabilityLabel     = "io.snosi.bootc.secureboot-capable"
 	CapabilityValue     = "true"

@@ -16,7 +16,7 @@ const validContract = `{
   "assembly": {"compatibility":"bootc-1.16.3-storage-digest-v1","bootc_version":"1.16.3","storage_digest_command":"bootc container compute-composefs-digest-from-storage","ukify":"direct-two-pass"},
   "installer": {
     "minimum_versions":{"bootc":"1.16.3","cosign":"2.6.1","systemd":"261.1-3"},
-    "minimum_capacities":{"esp_bytes":2147483648,"target_disk_bytes":32212254720},
+    "minimum_capacities":{"esp_bytes":1073741824,"target_disk_bytes":32212254720},
     "oci":{"capability_label":"io.snosi.bootc.secureboot-capable","capability_value":"true","policy":"/etc/containers/policy.json","signed_identity":"matchRepository"},
     "storage":{"esp_partition_type":"c12a7328-f81f-11d2-ba4b-00a0c93ec93b","root_partition_type":"4f68bce3-e8cd-4db1-96e7-fbcaf984b709","root_filesystem":"btrfs"},
     "bootc_install":{"composefs_backend":true,"bootloader":"systemd","root_mount_spec":"","type":"uki-type-2","forbid_kargs":true},
@@ -46,5 +46,16 @@ func TestParseContractAcceptsOnlySchemaOneSecureCapabilities(t *testing.T) {
 				t.Fatalf("ParseContract() error = %v, want contract rejection", err)
 			}
 		})
+	}
+}
+
+// The ESP floor must equal what snosi's normative contract declares and what
+// every secure image ships in its schema-1 JSON. A constant that merely "looks
+// safer" here is not safer: it rejects the contract the images actually carry,
+// and would refuse a conforming ESP at install time.
+func TestMinimumESPBytesMatchesTheNormativeContract(t *testing.T) {
+	const normative = uint64(1073741824) // 1 GiB, per docs/bootc-secure-install-contract.md
+	if secure.MinimumESPBytes != normative {
+		t.Fatalf("MinimumESPBytes = %d, normative contract says %d", secure.MinimumESPBytes, normative)
 	}
 }
