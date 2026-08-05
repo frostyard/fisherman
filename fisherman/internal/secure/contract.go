@@ -125,6 +125,11 @@ func (c Contract) Validate() error {
 		c.Assembly.StorageDigestCommand != "bootc container compute-composefs-digest-from-storage" || c.Assembly.UKI != "direct-two-pass" {
 		return fmt.Errorf("secure contract has unsupported assembly compatibility")
 	}
+	// These are the values the schema-1 contract DECLARES; how each is
+	// enforced against the medium is versionChecks' business. Two are floors
+	// (systemd, cosign) and bootc is an exact pin despite the field name --
+	// see the versionChecks comment for why. The declared values themselves do
+	// not change when the enforcement policy does.
 	if c.Installer.MinimumVersions.Bootc != "1.16.3" || c.Installer.MinimumVersions.Cosign != "2.6.1" ||
 		c.Installer.MinimumVersions.Systemd != "261.1-3" || c.Installer.MinimumCapacities.ESPBytes != MinimumESPBytes ||
 		c.Installer.MinimumCapacities.TargetDiskBytes != MinimumDiskBytes {

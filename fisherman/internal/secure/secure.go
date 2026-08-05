@@ -36,36 +36,130 @@ type Provenance struct {
 	Completed   string            `json:"completed_at"`
 }
 
-// ValidateVersions rejects an installer medium that does not carry the pinned
-// schema-1 compatibility stack.
-func ValidateVersions() error {
-	for _, check := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{"bootc", []string{"--version"}, "1.16.3"},
-		{"cosign", []string{"version"}, "2.6.1"},
-		{"dpkg-query", []string{"-W", "-f=${Version}", "systemd"}, "261.1-3"},
-	} {
-		out, err := runner.Output(check.name, check.args...)
-		if err != nil || !exactVersion(check.name, string(out), check.want) {
-			return fmt.Errorf("secure install requires %s version %s", check.name, check.want)
-		}
-	}
-	return nil
+// VersionPolicy selects how a pinned tool version is enforced.
+type VersionPolicy int
+
+const (
+	// PolicyExact permits one version and nothing else. Reserved for tools
+	// whose integration depends on observed, non-upstream-stable behaviour,
+	// where a NEWER release is precisely what breaks it silently.
+	PolicyExact VersionPolicy = iota
+	// PolicyFloor permits the pinned version or anything newer. A version above
+	// the floor that is not in validated still installs, but warns: the
+	// combination has not been proven end to end.
+	PolicyFloor
+)
+
+// VersionResult reports what was actually detected on the medium, plus any
+// non-fatal compatibility warnings.
+type VersionResult struct {
+	Detected map[string]string
+	Warnings []string
 }
 
-func exactVersion(tool, output, want string) bool {
+// versionChecks is the schema-1 compatibility stack.
+//
+// bootc is pinned EXACTLY and deliberately, despite living under the contract's
+// MinimumVersions field: the assembly path depends on bootc 1.16.3's observed
+// hidden storage-digest command and two-pass ukify behaviour, which upstream
+// does not guarantee. A newer bootc is the exact thing that would break it
+// without saying so.
+//
+// systemd and cosign are floors. What the systemd pin guards at install time is
+// tooling behaviour (systemd-cryptenroll TPM sealing, bootctl, repart); the
+// INSTALLED system's systemd family is pinned separately at image build time
+// and validated there. An exact pin here breaks on every routine media rebuild,
+// which creates standing pressure to edit the number rather than validate the
+// change — and a check people are trained to defeat protects nothing.
+var versionChecks = []struct {
+	name      string
+	args      []string
+	required  string
+	policy    VersionPolicy
+	validated []string
+}{
+	{"bootc", []string{"--version"}, "1.16.3", PolicyExact, nil},
+	{"cosign", []string{"version"}, "2.6.1", PolicyFloor, []string{"2.6.1"}},
+	{"dpkg-query", []string{"-W", "-f=${Version}", "systemd"}, "261.1-3", PolicyFloor, []string{"261.1-3"}},
+}
+
+// ValidateVersions rejects an installer medium that does not carry the schema-1
+// compatibility stack, and reports what it found.
+func ValidateVersions() (VersionResult, error) {
+	result := VersionResult{Detected: map[string]string{}}
+	for _, check := range versionChecks {
+		out, err := runner.Output(check.name, check.args...)
+		if err != nil {
+			return result, fmt.Errorf("secure install requires %s version %s", check.name, check.required)
+		}
+		detected, ok := parseVersion(check.name, string(out))
+		if !ok {
+			return result, fmt.Errorf("secure install requires %s version %s", check.name, check.required)
+		}
+		result.Detected[versionKey(check.name)] = detected
+
+		switch check.policy {
+		case PolicyExact:
+			if detected != check.required {
+				return result, fmt.Errorf("secure install requires %s version %s", check.name, check.required)
+			}
+		case PolicyFloor:
+			if DebCompare(detected, check.required) < 0 {
+				return result, fmt.Errorf("secure install requires %s version %s or newer, found %s",
+					check.name, check.required, detected)
+			}
+			if !contains(check.validated, detected) {
+				result.Warnings = append(result.Warnings, fmt.Sprintf(
+					"%s %s is above the %s floor but has not been validated end to end; "+
+						"re-run the secure install harness before relying on this combination",
+					versionKey(check.name), detected, check.required))
+			}
+		}
+	}
+	return result, nil
+}
+
+// versionKey names the tool as provenance records it: the systemd check runs
+// through dpkg-query, but what it reports is systemd's version.
+func versionKey(tool string) string {
+	if tool == "dpkg-query" {
+		return "systemd"
+	}
+	return tool
+}
+
+func contains(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// parseVersion extracts the bare version from each tool's output shape. It
+// rejects anything with embedded whitespace so a substring cannot pass as a
+// whole version.
+func parseVersion(tool, output string) (string, bool) {
 	output = strings.TrimSpace(output)
 	switch tool {
 	case "bootc":
-		return output == "bootc "+want
+		rest, ok := strings.CutPrefix(output, "bootc ")
+		if !ok || rest == "" || strings.ContainsAny(rest, " \t\n") {
+			return "", false
+		}
+		return rest, true
 	case "cosign":
 		match := regexp.MustCompile(`(?m)^GitVersion:\s*v?([^\s]+)\s*$`).FindStringSubmatch(output)
-		return len(match) == 2 && match[1] == want
+		if len(match) != 2 {
+			return "", false
+		}
+		return match[1], true
 	default:
-		return output == want
+		if output == "" || strings.ContainsAny(output, " \t\n") {
+			return "", false
+		}
+		return output, true
 	}
 }
 

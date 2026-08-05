@@ -21,11 +21,25 @@ func TestValidateDiskSizeRejectsDiskBelowContractFloor(t *testing.T) {
 	}
 }
 
+// stackOutput stubs the three version probes.
+func stackOutput(bootc, cosign, systemd string) func(string, ...string) ([]byte, error) {
+	return func(name string, _ ...string) ([]byte, error) {
+		switch name {
+		case "bootc":
+			return []byte("bootc " + bootc + "\n"), nil
+		case "cosign":
+			return []byte("GitVersion: v" + cosign + "\n"), nil
+		default:
+			return []byte(systemd + "\n"), nil
+		}
+	}
+}
+
 func TestValidateVersionsRejectsWrongSecureInstallerStack(t *testing.T) {
 	old := runner.OutputFn
 	t.Cleanup(func() { runner.OutputFn = old })
 	runner.OutputFn = func(_ string, _ ...string) ([]byte, error) { return []byte("0.0.0\n"), nil }
-	if err := secure.ValidateVersions(); err == nil {
+	if _, err := secure.ValidateVersions(); err == nil {
 		t.Fatal("unsupported secure installer versions accepted")
 	}
 }
@@ -33,18 +47,64 @@ func TestValidateVersionsRejectsWrongSecureInstallerStack(t *testing.T) {
 func TestValidateVersionsRejectsSubstringVersionMatches(t *testing.T) {
 	old := runner.OutputFn
 	t.Cleanup(func() { runner.OutputFn = old })
-	runner.OutputFn = func(name string, _ ...string) ([]byte, error) {
-		switch name {
-		case "bootc":
-			return []byte("bootc 1.16.30\n"), nil
-		case "cosign":
-			return []byte("GitVersion: v2.6.1\n"), nil
-		default:
-			return []byte("261.1-3\n"), nil
-		}
-	}
-	if err := secure.ValidateVersions(); err == nil {
+	runner.OutputFn = stackOutput("1.16.30", "2.6.1", "261.1-3")
+	if _, err := secure.ValidateVersions(); err == nil {
 		t.Fatal("substring bootc version accepted")
+	}
+}
+
+// bootc keeps an EXACT pin: its integration depends on observed,
+// non-upstream-stable behaviour, so a newer release is the thing most likely to
+// break it silently.
+func TestValidateVersionsRejectsNewerBootc(t *testing.T) {
+	old := runner.OutputFn
+	t.Cleanup(func() { runner.OutputFn = old })
+	runner.OutputFn = stackOutput("1.17.0", "2.6.1", "261.1-3")
+	if _, err := secure.ValidateVersions(); err == nil {
+		t.Fatal("newer bootc accepted against an exact pin")
+	}
+}
+
+func TestValidateVersionsRejectsSystemdBelowFloor(t *testing.T) {
+	old := runner.OutputFn
+	t.Cleanup(func() { runner.OutputFn = old })
+	runner.OutputFn = stackOutput("1.16.3", "2.6.1", "261.1-2")
+	if _, err := secure.ValidateVersions(); err == nil {
+		t.Fatal("systemd below the contract floor accepted")
+	}
+}
+
+func TestValidateVersionsAcceptsValidatedStackSilently(t *testing.T) {
+	old := runner.OutputFn
+	t.Cleanup(func() { runner.OutputFn = old })
+	runner.OutputFn = stackOutput("1.16.3", "2.6.1", "261.1-3")
+	result, err := secure.ValidateVersions()
+	if err != nil {
+		t.Fatalf("validated stack rejected: %v", err)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("validated stack warned: %v", result.Warnings)
+	}
+	if result.Detected["systemd"] != "261.1-3" || result.Detected["bootc"] != "1.16.3" {
+		t.Fatalf("detected versions not reported: %v", result.Detected)
+	}
+}
+
+// The case that motivated the change: media rebuilt onto a newer systemd in the
+// same family. It must install, and it must say so loudly.
+func TestValidateVersionsWarnsAboveFloorButUnvalidated(t *testing.T) {
+	old := runner.OutputFn
+	t.Cleanup(func() { runner.OutputFn = old })
+	runner.OutputFn = stackOutput("1.16.3", "2.6.1", "261.2-1")
+	result, err := secure.ValidateVersions()
+	if err != nil {
+		t.Fatalf("systemd above the floor rejected: %v", err)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "261.2-1") {
+		t.Fatalf("above-floor unvalidated systemd did not warn: %v", result.Warnings)
+	}
+	if result.Detected["systemd"] != "261.2-1" {
+		t.Fatalf("provenance recorded the floor rather than what ran: %v", result.Detected)
 	}
 }
 
