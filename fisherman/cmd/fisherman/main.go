@@ -317,7 +317,10 @@ func runSecureOperation(operation string, args []string) {
 	if err := secure.AuthenticateRecovery(recovery, backing); err != nil {
 		fatal("authenticating secure ESP repair: %v", err)
 	}
-	if err := secure.RepairESP(root, contract.MOKCertificate); err != nil {
+	// The recovery operations run against an already-installed system, where no
+	// source image is available: target root serves as both roots. This carries
+	// the same composefs limitation noted on RestageMOK.
+	if err := secure.RepairESP(root, root, contract.MOKCertificate); err != nil {
 		fatal("secure ESP repair: %v", err)
 	}
 }
@@ -371,6 +374,19 @@ func main() {
 	// Declared here so the detected versions survive to the provenance record
 	// written much later in this function.
 	var secureVersions secure.VersionResult
+	// Destination for the image's usr/lib/snosi subtree. main owns the
+	// directory's lifetime; BootcInstall fills it, because only that package
+	// knows the store paths the extraction needs.
+	var secureImageRoot string
+	if r.SecureInstall != nil {
+		secureImageRoot, err = os.MkdirTemp("", "fisherman-secure-image-")
+		if err != nil {
+			fatal("staging secure artifact root: %v", err)
+		}
+		// Public artifacts only -- contract, MOK certificate, PCR public key,
+		// signed second stage. No secret ever lands here.
+		defer os.RemoveAll(secureImageRoot)
+	}
 	if r.SecureInstall != nil {
 		luksMapper = "root"
 		if err := secure.ValidateDiskSize(r.Disk); err != nil {
@@ -817,23 +833,28 @@ func main() {
 		SecureInstall:         r.SecureInstall != nil,
 		SecurePolicyPath:      map[bool]string{true: "/etc/containers/policy.json"}[r.SecureInstall != nil],
 		SecureComposefsDigest: map[bool]*string{true: &expectedComposefs}[r.SecureInstall != nil],
+		SecureImageRoot:       map[bool]*string{true: &secureImageRoot}[r.SecureInstall != nil],
 	}); err != nil {
 		fatal("bootc install: %v", err)
 	}
 	var secureContract *secure.Contract
 	var secureArtifacts *secure.InstalledArtifacts
 	if r.SecureInstall != nil {
-		secureContract, err = secure.LoadInstalledContract(activeTargetMount)
+		// The contract and the identities it names live under /usr, which a
+		// composefs deployment does not expose as a directory tree on the
+		// target. They come from the image instead -- pinned to the deployment
+		// by the composefs digest verified during the install above.
+		secureContract, err = secure.LoadInstalledContract(secureImageRoot)
 		if err != nil {
 			fatal("validating deployed secure contract: %v", err)
 		}
-		if err := secure.RepairESP(activeTargetMount, secureContract.MOKCertificate); err != nil {
+		if err := secure.RepairESP(activeTargetMount, secureImageRoot, secureContract.MOKCertificate); err != nil {
 			fatal("installing verified secure ESP second stage: %v", err)
 		}
 		if expectedComposefs == "" {
 			fatal("computing verified deployment composefs identity")
 		}
-		secureArtifacts, err = secure.VerifyInstalled(activeTargetMount, secureContract, expectedComposefs)
+		secureArtifacts, err = secure.VerifyInstalled(activeTargetMount, secureImageRoot, secureContract, expectedComposefs)
 		if err != nil {
 			fatal("validating installed secure artifacts: %v", err)
 		}

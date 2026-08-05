@@ -142,7 +142,7 @@ func TestRepairESPOnlyReplacesVerifiedSecondStage(t *testing.T) {
 		verifies++
 		return nil
 	}
-	if err := secure.RepairESP(root, "/usr/lib/snosi/custom/mok.crt"); err != nil {
+	if err := secure.RepairESP(root, root, "/usr/lib/snosi/custom/mok.crt"); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(filepath.Join(root, "boot/efi/EFI/BOOT/grubx64.efi")); err != nil || string(data) != "efi" {
@@ -189,7 +189,7 @@ func TestRepairESPKeepsPriorStageWhenMutatedTemporaryCopyFailsVerification(t *te
 		}
 		return nil
 	}
-	if err := secure.RepairESP(root, "/usr/lib/snosi/mok.crt"); err == nil {
+	if err := secure.RepairESP(root, root, "/usr/lib/snosi/mok.crt"); err == nil {
 		t.Fatal("temporary replacement verification failure accepted")
 	}
 	data, err := os.ReadFile(filepath.Join(root, "boot/efi/EFI/BOOT/grubx64.efi"))

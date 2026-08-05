@@ -58,7 +58,7 @@ func TestRepairESPKeepsPriorStageWhenReplacementSyncFails(t *testing.T) {
 	syncFile = func(*os.File) error { return errors.New("sync failed") }
 	runner.RunFn = func(_ io.Reader, _ string, _ ...string) error { return nil }
 	t.Cleanup(func() { syncFile, runner.RunFn = old, oldRun })
-	if err := RepairESP(root, "/usr/lib/snosi/mok.crt"); err == nil {
+	if err := RepairESP(root, root, "/usr/lib/snosi/mok.crt"); err == nil {
 		t.Fatal("replacement sync failure was accepted")
 	}
 	if data, err := os.ReadFile(target); err != nil || string(data) != "old" {
@@ -80,7 +80,7 @@ func TestRepairESPRestoresPriorStageAfterPostRenameSyncFailure(t *testing.T) {
 	}
 	runner.RunFn = func(_ io.Reader, _ string, _ ...string) error { return nil }
 	t.Cleanup(func() { syncFile, runner.RunFn = oldSync, oldRun })
-	if err := RepairESP(root, "/usr/lib/snosi/mok.crt"); err == nil {
+	if err := RepairESP(root, root, "/usr/lib/snosi/mok.crt"); err == nil {
 		t.Fatal("post-rename sync failure accepted")
 	}
 	if data, err := os.ReadFile(target); err != nil || string(data) != "old" {
@@ -107,7 +107,7 @@ func TestRepairESPReportsRestoreFailureAfterPostRenameSyncFailure(t *testing.T) 
 	}
 	runner.RunFn = func(_ io.Reader, _ string, _ ...string) error { return nil }
 	t.Cleanup(func() { syncFile, runner.RunFn = oldSync, oldRun })
-	err := RepairESP(root, "/usr/lib/snosi/mok.crt")
+	err := RepairESP(root, root, "/usr/lib/snosi/mok.crt")
 	if err == nil || !strings.Contains(err.Error(), "restoring previous systemd-boot stage") {
 		t.Fatalf("error = %v", err)
 	}
