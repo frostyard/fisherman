@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - 'v*'
+  # release-cut.yml pushes the version tag using GITHUB_TOKEN, and GitHub
+  # deliberately does not let that token trigger further workflows. So the push
+  # trigger above never fires for a cut release: you get a tag and no release,
+  # silently. Dispatch this at the tag ref to publish it:
+  #
+  #   gh workflow run release-publish.yml --ref vX.Y.Z
+  #
+  # The alternative fix -- having release-cut push with a PAT -- was not taken:
+  # it would widen that workflow's credentials to make an event fire, where this
+  # only adds a manual path for the case the automatic one cannot cover.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,6 +23,16 @@ jobs:
   publish:
     runs-on: ubuntu-24.04
     steps:
+      # Everything below derives the release from GITHUB_REF_NAME, so a
+      # dispatch at a branch ref would try to publish a release named after the
+      # branch. Fail immediately and say why.
+      - name: Require a tag ref
+        run: |
+          [[ $GITHUB_REF == refs/tags/v* ]] || {
+            echo "::error::release-publish must run at a version tag ref, got '$GITHUB_REF'." >&2
+            echo "::error::Dispatch it with: gh workflow run release-publish.yml --ref vX.Y.Z" >&2
+            exit 1
+          }
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
