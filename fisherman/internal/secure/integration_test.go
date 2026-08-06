@@ -177,7 +177,14 @@ func installedFixture(t *testing.T, composefs string) string {
 	if err := os.WriteFile(filepath.Join(root, "boot/efi/loader/entries/snosi.conf"), []byte("efi /EFI/Linux/snosi.efi\noptions rw composefs="+composefs+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "boot/efi/EFI/Linux/snosi.efi"), []byte("uki"), 0o644); err != nil {
+	// A real PE: VerifyInstalled parses the UKI's .pcrpkey section rather than
+	// shelling out, so a placeholder string is no longer a usable fixture.
+	pe := secure.WriteTestPE(t, map[string]string{".pcrpkey": "expected"})
+	uki, err := os.ReadFile(pe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "boot/efi/EFI/Linux/snosi.efi"), uki, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"BOOTX64.EFI", "mmx64.efi", "grubx64.efi"} {
@@ -185,17 +192,13 @@ func installedFixture(t *testing.T, composefs string) string {
 			t.Fatal(err)
 		}
 	}
-	old := runner.RunFn
-	t.Cleanup(func() { runner.RunFn = old })
-	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
-		if name == "objcopy" {
-			for _, arg := range args {
-				if strings.HasPrefix(arg, ".pcrpkey=") {
-					return os.WriteFile(strings.TrimPrefix(arg, ".pcrpkey="), []byte("expected"), 0o600)
-				}
-			}
-		}
-		return nil
+	oldRun, oldOut := runner.RunFn, runner.OutputFn
+	t.Cleanup(func() { runner.RunFn, runner.OutputFn = oldRun, oldOut })
+	runner.RunFn = func(_ io.Reader, _ string, _ ...string) error { return nil }
+	// The installed UKI must report as signed; an unsigned one is now refused
+	// outright, which is the behaviour this fixture is not trying to test.
+	runner.OutputFn = func(_ string, _ ...string) ([]byte, error) {
+		return []byte("signature 1\nimage signature issuers:\n - /CN=snosi\n"), nil
 	}
 	return root
 }
@@ -222,7 +225,14 @@ func installedBootcFixture(t *testing.T, cmdline string) string {
 	if err := os.WriteFile(filepath.Join(root, "boot/efi/loader/entries/bootc_cayo-13-1.conf"), []byte(entry), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "boot/efi/EFI/Linux/snosi.efi"), []byte("uki"), 0o644); err != nil {
+	// A real PE carrying both sections VerifyInstalled reads. The composefs
+	// identity lives in .cmdline exactly as a signed UKI carries it.
+	pe := secure.WriteTestPE(t, map[string]string{".pcrpkey": "expected", ".cmdline": cmdline})
+	uki, err := os.ReadFile(pe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "boot/efi/EFI/Linux/snosi.efi"), uki, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"BOOTX64.EFI", "mmx64.efi", "grubx64.efi"} {
@@ -230,21 +240,11 @@ func installedBootcFixture(t *testing.T, cmdline string) string {
 			t.Fatal(err)
 		}
 	}
-	old := runner.RunFn
-	t.Cleanup(func() { runner.RunFn = old })
-	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
-		if name == "objcopy" {
-			for _, arg := range args {
-				if strings.HasPrefix(arg, ".pcrpkey=") {
-					return os.WriteFile(strings.TrimPrefix(arg, ".pcrpkey="), []byte("expected"), 0o600)
-				}
-				// NUL-padded, as a real PE section is.
-				if strings.HasPrefix(arg, ".cmdline=") {
-					return os.WriteFile(strings.TrimPrefix(arg, ".cmdline="), []byte(cmdline+"\x00\x00"), 0o600)
-				}
-			}
-		}
-		return nil
+	oldRun, oldOut := runner.RunFn, runner.OutputFn
+	t.Cleanup(func() { runner.RunFn, runner.OutputFn = oldRun, oldOut })
+	runner.RunFn = func(_ io.Reader, _ string, _ ...string) error { return nil }
+	runner.OutputFn = func(_ string, _ ...string) ([]byte, error) {
+		return []byte("signature 1\nimage signature issuers:\n - /CN=snosi\n"), nil
 	}
 	return root
 }
@@ -268,5 +268,20 @@ func TestVerifyInstalledRefusesAMismatchedUKICmdline(t *testing.T) {
 	root := installedBootcFixture(t, "rw composefs=?"+strings.Repeat("b", 128))
 	if _, err := secure.VerifyInstalled(root, root, &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}, strings.Repeat("a", 128)); err == nil {
 		t.Fatal("mismatched composefs identity in .cmdline accepted")
+	}
+}
+
+// An unsigned UKI on the ESP of a secure install cannot boot under enforced
+// Secure Boot, and the firmware reports only `Invalid parameter` with no
+// bootable option. VerifyInstalled must refuse it while the install can still
+// fail loudly, rather than leaving it for the first reboot to discover.
+func TestVerifyInstalledRefusesAnUnsignedUKI(t *testing.T) {
+	digest := strings.Repeat("a", 128)
+	root := installedBootcFixture(t, "rw composefs=?"+digest)
+	runner.OutputFn = func(_ string, _ ...string) ([]byte, error) {
+		return []byte("No signature table present\n"), nil
+	}
+	if _, err := secure.VerifyInstalled(root, root, &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}, digest); err == nil {
+		t.Fatal("an unsigned installed UKI was accepted")
 	}
 }

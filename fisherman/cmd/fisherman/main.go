@@ -235,7 +235,6 @@ func checkRequiredTools(r *recipe.Recipe) error {
 		// partitioning and OS install) would leave the disk partially modified.
 		{"systemd-cryptenroll", "systemd", r.Encryption.Type == "tpm2-luks" || r.Encryption.Type == "tpm2-luks-passphrase"},
 		{"systemd-cryptenroll", "systemd", r.SecureInstall != nil},
-		{"objcopy", "binutils", r.SecureInstall != nil},
 		{"sbverify", "sbsigntool", r.SecureInstall != nil},
 		{"mokutil", "mokutil", r.SecureInstall != nil},
 		{"openssl", "openssl", r.SecureInstall != nil},

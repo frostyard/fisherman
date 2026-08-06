@@ -283,7 +283,11 @@ func TestSecureRecoveryKeyValidatesExternalFileWithoutReadingSecret(t *testing.T
 func TestCheckRequiredTools_SecureInstallRequiresArtifactAndEnrollmentTools(t *testing.T) {
 	orig := lookPath
 	t.Cleanup(func() { lookPath = orig })
-	for _, missing := range []string{"objcopy", "sbverify", "mokutil", "systemd-cryptenroll", "openssl", "blkid", "blockdev", "findmnt"} {
+	// objcopy is deliberately absent: reading a UKI's sections no longer shells
+	// out to it. `objcopy --dump-section <name>=<out> <uki>` with no output file
+	// rewrote the UKI in place and dropped its Authenticode signature, so the
+	// dependency was removed along with the calls. See peSection.
+	for _, missing := range []string{"sbverify", "mokutil", "systemd-cryptenroll", "openssl", "blkid", "blockdev", "findmnt"} {
 		t.Run(missing, func(t *testing.T) {
 			lookPath = func(file string) (string, error) {
 				if file == missing {
