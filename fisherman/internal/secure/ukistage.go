@@ -45,6 +45,20 @@ const installedUKIDir = "boot/efi/EFI/Linux"
 //
 // Idempotent: an installed UKI that already carries a signature is left alone,
 // so a future bootc that preserves it needs no change here.
+//
+// SCOPE: install only. `bootc switch` at runtime writes a new UKI for the new
+// composefs digest and drops its signature exactly the same way, and nothing
+// puts it back -- /usr/libexec/bootc-update-stage does not touch the ESP, and
+// snosi-bootc-bootloader-reconcile reconciles only EFI/BOOT/grubx64.efi. So an
+// updated machine returns to the unbootable state this fixes.
+//
+// The runtime fix cannot live here, and is not a copy of this function: the
+// signed UKI is at boot/EFI/Linux/<kver>.efi in the image, and at runtime /boot
+// IS the ESP mount, which shadows it. snosi hit the same wall for systemd-boot
+// and answered it by staging an immutable copy at usr/lib/snosi/bootc/ during
+// the image build (assemble-uki.sh: "The runtime reconciler cannot use /boot
+// because the ESP can shadow it"). The UKI needs the same, plus a reconciler
+// arm. Tracked as frostyard/snosi#516.
 func StageSignedUKI(root, imageRoot, mokCertificate string) error {
 	installed, err := findUKIs(filepath.Join(root, installedUKIDir))
 	if err != nil {
