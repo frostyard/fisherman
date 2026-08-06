@@ -866,6 +866,14 @@ func main() {
 		if err := secure.RepairESP(activeTargetMount, secureImageRoot, secureContract.MOKCertificate); err != nil {
 			fatal("installing verified secure ESP second stage: %v", err)
 		}
+		// bootc rewrites the UKI and drops its Authenticode signature, which
+		// shim then refuses. Must run before VerifyInstalled, which records
+		// uki_sha256 into the provenance -- that hash has to describe the UKI
+		// the machine will actually boot.
+		if err := secure.StageSignedUKI(activeTargetMount, secureImageRoot, secureContract.MOKCertificate); err != nil {
+			fatal("staging the signed secure UKI: %v", err)
+		}
+		progress.Secure("signed_uki", "staged")
 		if expectedComposefs == "" {
 			fatal("computing verified deployment composefs identity")
 		}

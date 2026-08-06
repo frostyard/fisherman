@@ -17,7 +17,12 @@ import (
 // MOK-signed second stage (usr/lib/snosi), plus Debian's Microsoft-signed shim
 // and MokManager (usr/lib/shim), which are what make the ESP chain bootable
 // under Secure Boot.
-var SecureArtifactSubtrees = []string{"usr/lib/snosi", "usr/lib/shim"}
+//
+// boot/EFI/Linux carries the MOK-signed UKI. It is by far the largest entry
+// here -- around 100 MiB against a few MiB for everything else -- and it is
+// extracted for one reason: `bootc install` rewrites the UKI and drops its
+// signature, so the signed build has to come from the image. See StageSignedUKI.
+var SecureArtifactSubtrees = []string{"usr/lib/snosi", "usr/lib/shim", "boot/EFI/Linux"}
 
 // ExtractSecureImageRoot materialises SecureArtifactSubtree out of the image
 // into dest, producing a directory that can be read with the same relative
