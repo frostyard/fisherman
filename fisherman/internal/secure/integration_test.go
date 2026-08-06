@@ -199,3 +199,74 @@ func installedFixture(t *testing.T, composefs string) string {
 	}
 	return root
 }
+
+// installedBootcFixture reproduces what bootc actually writes: a BLS entry with
+// a `uki` directive and NO options line, with the composefs identity living in
+// the UKI's signed .cmdline section. installedFixture models an `options`-style
+// entry, which no real install produces -- so every existing test here has been
+// exercising the fallback rather than the live path.
+func installedBootcFixture(t *testing.T, cmdline string) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, path := range []string{
+		"usr/lib/snosi", "boot/efi/loader/entries", "boot/efi/EFI/Linux", "boot/efi/EFI/BOOT",
+	} {
+		if err := os.MkdirAll(filepath.Join(root, path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "usr/lib/snosi/pcr.pub"), []byte("expected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := "title Cayo Linux 13\nversion 13\nuki /EFI/Linux/snosi.efi\nsort-key bootc-cayo-0\n"
+	if err := os.WriteFile(filepath.Join(root, "boot/efi/loader/entries/bootc_cayo-13-1.conf"), []byte(entry), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "boot/efi/EFI/Linux/snosi.efi"), []byte("uki"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"BOOTX64.EFI", "mmx64.efi", "grubx64.efi"} {
+		if err := os.WriteFile(filepath.Join(root, "boot/efi/EFI/BOOT", name), []byte("efi"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := runner.RunFn
+	t.Cleanup(func() { runner.RunFn = old })
+	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
+		if name == "objcopy" {
+			for _, arg := range args {
+				if strings.HasPrefix(arg, ".pcrpkey=") {
+					return os.WriteFile(strings.TrimPrefix(arg, ".pcrpkey="), []byte("expected"), 0o600)
+				}
+				// NUL-padded, as a real PE section is.
+				if strings.HasPrefix(arg, ".cmdline=") {
+					return os.WriteFile(strings.TrimPrefix(arg, ".cmdline="), []byte(cmdline+"\x00\x00"), 0o600)
+				}
+			}
+		}
+		return nil
+	}
+	return root
+}
+
+func TestVerifyInstalledReadsComposefsFromTheUKICmdline(t *testing.T) {
+	digest := strings.Repeat("a", 128)
+	root := installedBootcFixture(t, "rw composefs=?"+digest)
+	artifacts, err := secure.VerifyInstalled(root, root, &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}, digest)
+	if err != nil {
+		t.Fatalf("VerifyInstalled() on the entry bootc writes: %v", err)
+	}
+	if artifacts.ComposefsID != digest {
+		t.Fatalf("ComposefsID = %q, want %q", artifacts.ComposefsID, digest)
+	}
+}
+
+// A UKI whose baked-in command line names a different deployment must be
+// refused: that is the check standing between a verified digest and whatever
+// actually boots.
+func TestVerifyInstalledRefusesAMismatchedUKICmdline(t *testing.T) {
+	root := installedBootcFixture(t, "rw composefs=?"+strings.Repeat("b", 128))
+	if _, err := secure.VerifyInstalled(root, root, &secure.Contract{PCRPublicKey: "/usr/lib/snosi/pcr.pub"}, strings.Repeat("a", 128)); err == nil {
+		t.Fatal("mismatched composefs identity in .cmdline accepted")
+	}
+}

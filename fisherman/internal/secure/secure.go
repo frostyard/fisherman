@@ -408,18 +408,37 @@ func VerifyInstalled(root, imageRoot string, contract *Contract, expectedCompose
 			return nil, fmt.Errorf("reading installed Type #2 UKI: %w", err)
 		}
 		hash := sha256.Sum256(ukiBytes)
-		composefs := ""
-		for _, line := range strings.Split(string(data), "\n") {
-			if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "options" {
-				for _, option := range fields[1:] {
-					if strings.HasPrefix(option, "composefs=") {
-						composefs = strings.TrimPrefix(option, "composefs=")
+		// The composefs identity lives in the UKI's own .cmdline section, not in
+		// the BLS entry. A Type #2 UKI has its command line baked in and signed
+		// -- which is exactly why bootc refuses --karg against one -- so the
+		// entries it writes carry no `options` line at all:
+		//
+		//   title Cayo Linux 13
+		//   version 13
+		//   uki /EFI/Linux/bootc/bootc_composefs-<id>.efi
+		//   sort-key bootc-cayo-0
+		//
+		// Reading only `options` therefore found nothing on every real install.
+		// .cmdline is also the authoritative source: it is what actually boots,
+		// and it is covered by the UKI's signature, whereas an `options` line is
+		// not. The BLS fallback is kept for a non-UKI entry shape.
+		composefs, err := composefsIdentityFromUKI(uki)
+		if err != nil {
+			return nil, err
+		}
+		if composefs == "" {
+			for _, line := range strings.Split(string(data), "\n") {
+				if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "options" {
+					for _, option := range fields[1:] {
+						if strings.HasPrefix(option, "composefs=") {
+							composefs = strings.TrimPrefix(option, "composefs=")
+						}
 					}
 				}
 			}
 		}
 		if composefs == "" {
-			return nil, fmt.Errorf("installed Type #2 UKI BLS entry lacks composefs identity")
+			return nil, fmt.Errorf("installed Type #2 UKI carries no composefs identity in .cmdline or its BLS entry")
 		}
 		observed := strings.TrimPrefix(composefs, "?")
 		if observed == composefs || !install.ValidComposefsDigest(observed) {
@@ -435,6 +454,34 @@ func VerifyInstalled(root, imageRoot string, contract *Contract, expectedCompose
 		result = candidate
 	}
 	return result, nil
+}
+
+// composefsIdentityFromUKI reads composefs=<id> out of a UKI's signed .cmdline
+// section. Returns "" when the section carries no such option, which lets the
+// caller fall back to a BLS options line.
+func composefsIdentityFromUKI(uki string) (string, error) {
+	file, err := os.CreateTemp("", "fisherman-cmdline-*")
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	file.Close()
+	defer os.Remove(path)
+
+	if err := runner.Run("objcopy", "--dump-section", ".cmdline="+path, uki); err != nil {
+		return "", fmt.Errorf("extracting installed UKI command line: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading installed UKI command line: %w", err)
+	}
+	// The section is NUL-padded.
+	for _, field := range strings.Fields(strings.TrimRight(string(data), "\x00")) {
+		if strings.HasPrefix(field, "composefs=") {
+			return strings.TrimPrefix(field, "composefs="), nil
+		}
+	}
+	return "", nil
 }
 
 // RestageMOK verifies the recovery credential before staging only the public
