@@ -18,15 +18,27 @@ func ValidateType2BLS(entry []byte) (string, error) {
 		switch fields[0] {
 		case "linux", "initrd":
 			return "", fmt.Errorf("type #2 BLS entry contains forbidden %s directive", fields[0])
-		case "efi":
+		// `uki` is what bootc actually writes, and `efi` is the generic
+		// EFI-binary directive; both designate the same thing here, a Type #2
+		// UKI under /EFI/Linux. Accepting only `efi` rejected every entry bootc
+		// produces:
+		//
+		//   validating .../bootc_cayo-13-1.conf: type #2 BLS entry has no efi
+		//   directive
+		//
+		// snosi's note that "bootc writes a BLS efi= entry" was an observation
+		// of one build and has since gone stale. The constraints that matter --
+		// exactly one such directive, path under /EFI/Linux, .efi suffix, and no
+		// raw linux/initrd -- are unchanged.
+		case "efi", "uki":
 			if len(fields) != 2 || efi != "" || !strings.HasPrefix(fields[1], "/EFI/Linux/") || !strings.HasSuffix(fields[1], ".efi") {
-				return "", fmt.Errorf("type #2 BLS entry has an invalid efi directive")
+				return "", fmt.Errorf("type #2 BLS entry has an invalid %s directive", fields[0])
 			}
 			efi = fields[1]
 		}
 	}
 	if efi == "" {
-		return "", fmt.Errorf("type #2 BLS entry has no efi directive")
+		return "", fmt.Errorf("type #2 BLS entry has no efi or uki directive")
 	}
 	return efi, nil
 }
