@@ -374,9 +374,17 @@ func main() {
 	// Declared here so the detected versions survive to the provenance record
 	// written much later in this function.
 	var secureVersions secure.VersionResult
-	// Destination for the image's usr/lib/snosi subtree. main owns the
-	// directory's lifetime; BootcInstall fills it, because only that package
-	// knows the store paths the extraction needs.
+	// Destination for the image's usr/lib/snosi and usr/lib/shim subtrees. main
+	// owns the directory's lifetime; BootcInstall fills it, because only that
+	// package knows the store paths the extraction needs.
+	//
+	// EVERYTHING the secure path reads from under /usr must come from here, not
+	// from activeTargetMount: a composefs deployment exposes no /usr tree on the
+	// target. That is the contract, the PCR public key, the MOK certificate, the
+	// signed second stage, shim and MokManager. Only boot/efi and var are
+	// genuinely on the target. This has now been got wrong twice -- the MOK
+	// certificate reads were missed when the rest were converted -- so check
+	// this list before adding a read.
 	var secureImageRoot string
 	if r.SecureInstall != nil {
 		secureImageRoot, err = os.MkdirTemp("", "fisherman-secure-image-")
@@ -869,7 +877,10 @@ func main() {
 		if err := secure.EnrollTPMBytes(r.SecureInstall.RecoveryKeyFile, secureArtifacts.PCRPublicKey, activeRootPart); err != nil {
 			fatal("enrolling secure TPM unlock: %v", err)
 		}
-		if err := secure.StageMOK(filepath.Join(activeTargetMount, strings.TrimPrefix(secureContract.MOKCertificate, "/")), r.SecureInstall.MOKPasswordFile); err != nil {
+		// From the image root, not the target: a composefs deployment exposes no
+		// /usr tree under the target mount. Same reason as the contract, the PCR
+		// key and the ESP second stage.
+		if err := secure.StageMOK(filepath.Join(secureImageRoot, strings.TrimPrefix(secureContract.MOKCertificate, "/")), r.SecureInstall.MOKPasswordFile); err != nil {
 			fatal("staging secure MOK enrollment: %v", err)
 		}
 	}
@@ -1096,7 +1107,8 @@ func main() {
 		if err != nil {
 			fatal("recording secure TPM token identity: %v", err)
 		}
-		mokCertificate, err := os.ReadFile(filepath.Join(activeTargetMount, strings.TrimPrefix(secureContract.MOKCertificate, "/")))
+		// Image root, for the same reason as the staging read above.
+		mokCertificate, err := os.ReadFile(filepath.Join(secureImageRoot, strings.TrimPrefix(secureContract.MOKCertificate, "/")))
 		if err != nil {
 			fatal("reading secure MOK certificate: %v", err)
 		}
