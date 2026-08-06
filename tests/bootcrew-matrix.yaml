@@ -70,6 +70,30 @@ images:
     vm_boot: true
     build_ssh_image: true
 
+  # ext4 + composefs. btrfs is what Frostyard installs default to and what the
+  # other three entries cover, so this is the only leg that exercises
+  # FormatRoot's ext4 branch — and that branch is not a trivial variation:
+  #
+  #   mkfs.ext4 -F -L root -O verity <dev>
+  #
+  # composefs needs FS_IOC_ENABLE_VERITY per file, and ext4 only offers it when
+  # the verity feature is set at format time. Drop that one flag and the install
+  # still succeeds; the deployment then fails to boot. Nothing else in CI would
+  # notice. Keep this entry for as long as fisherman claims ext4 support.
+  #
+  # Advisory (no `required`) and on cayo rather than snow: cayo is the small
+  # image, so this is the cheap way to hold the coverage.
+  - name: frostyard-cayo-ext4
+    image: ghcr.io/frostyard/cayo:mechanics
+    ssh_image_name: frostyard-cayo
+    filesystem: ext4
+    composefs_backend: true
+    bootloader: systemd
+    unified_storage: false
+    selinux_disabled: false
+    flatpaks: []
+    vm_boot: true
+
   # LUKS + composefs + btrfs. This replaces the dakota-luks / dakota-luks-btrfs
   # entries and is not optional coverage: it is exactly the shape the snosi
   # secure install produces (encrypted root, composefs backend, systemd-boot),
