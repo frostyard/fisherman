@@ -10,9 +10,23 @@ import (
 )
 
 // ESP chain component paths, relative to the image root.
+//
+// The `.signed` suffixes are load-bearing. Debian splits shim across two
+// packages that install into the SAME directory:
+//
+//	shim-unsigned          usr/lib/shim/shimx64.efi          <- NO signature
+//	shim-signed            usr/lib/shim/shimx64.efi.signed   <- Microsoft-signed
+//	shim-helpers-*-signed  usr/lib/shim/mmx64.efi.signed     <- Debian-signed
+//
+// Both names are present in the image, and the unsigned one has the more
+// obvious spelling. Staging it produces an ESP that firmware refuses at the
+// very first hop, with only `BdsDxe: failed to load Boot0001 ... Access
+// Denied` on the console to say so — no shim, so no `Security Violation`
+// either. snosi's own native-installer takes the `.signed` binaries
+// (shared/native-installer/tools/build-iso.sh); this must match it.
 const (
-	imageShim        = "usr/lib/shim/shimx64.efi"
-	imageMokManager  = "usr/lib/shim/mmx64.efi"
+	imageShim        = "usr/lib/shim/shimx64.efi.signed"
+	imageMokManager  = "usr/lib/shim/mmx64.efi.signed"
 	imageSecondStage = "usr/lib/snosi/bootc/systemd-bootx64.efi"
 )
 
@@ -51,13 +65,16 @@ func StageESPChain(root, imageRoot, mokCertificate string) error {
 		return nil
 	}
 
-	// The second stage is the only component this verifies, and deliberately so.
-	// It is the binary snosi signs with its own MOK, so the MOK certificate is
-	// the right check for it. shim and MokManager come from Debian and are
-	// Microsoft-signed; verifying them against snosi's MOK would fail, and
-	// their trust is established by firmware at boot, not here. What this does
-	// rely on is that all three came out of an image whose signature was
-	// verified at pull time.
+	// The second stage is checked against the MOK, because that is the binary
+	// snosi signs with it. shim and MokManager are signed by Microsoft and
+	// Debian respectively, so the MOK is the wrong certificate for them and
+	// their trust is established by firmware at boot rather than here.
+	//
+	// They are still checked, just for a weaker property: that they carry a
+	// signature at all. That is exactly the property that distinguishes
+	// `shimx64.efi` from `shimx64.efi.signed`, and an earlier version of this
+	// file staged the unsigned pair while a comment here asserted they were
+	// Microsoft-signed. An assertion in a comment cannot fail; this can.
 	if mokCertificate == "" || !strings.HasPrefix(mokCertificate, "/") {
 		return fmt.Errorf("validating MOK certificate path for ESP staging")
 	}
@@ -65,6 +82,11 @@ func StageESPChain(root, imageRoot, mokCertificate string) error {
 	secondStage := filepath.Join(imageRoot, imageSecondStage)
 	if err := runner.Run("sbverify", "--cert", certificate, secondStage); err != nil {
 		return fmt.Errorf("verifying MOK-signed second stage before staging: %w", err)
+	}
+	for _, component := range []string{imageShim, imageMokManager} {
+		if err := assertPESigned(filepath.Join(imageRoot, component)); err != nil {
+			return err
+		}
 	}
 
 	// shim LAST: until it is in place the firmware entry point is still bootc's
@@ -79,6 +101,28 @@ func StageESPChain(root, imageRoot, mokCertificate string) error {
 		if err := copyESPComponent(filepath.Join(imageRoot, component.source), filepath.Join(boot, component.target)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// assertPESigned refuses a PE binary that carries no Authenticode signature.
+//
+// It deliberately does not check WHO signed it: shim is Microsoft-signed and
+// MokManager is Debian-signed, the trusted CAs live in the firmware's db, and
+// pinning issuer strings here would break on the next Debian signing-key
+// rotation for no security gain. "Has a signature table" is the weakest useful
+// property and the one that catches staging an unsigned variant by name.
+//
+// `sbverify --list` exits 0 for signed and unsigned binaries alike — it is
+// reporting, not verifying — so the exit code says nothing and the output has
+// to be read.
+func assertPESigned(path string) error {
+	out, err := runner.Output("sbverify", "--list", path)
+	if err != nil {
+		return fmt.Errorf("listing signatures on ESP component %s: %w", filepath.Base(path), err)
+	}
+	if !strings.Contains(string(out), "image signature issuers:") {
+		return fmt.Errorf("refusing to stage unsigned ESP component %s: firmware would reject it with EFI_ACCESS_DENIED (want the .signed variant)", filepath.Base(path))
 	}
 	return nil
 }
