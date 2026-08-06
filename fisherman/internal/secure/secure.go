@@ -385,20 +385,17 @@ func VerifyInstalled(root, imageRoot string, contract *Contract, expectedCompose
 			return nil, fmt.Errorf("validating %s: %w", entry, err)
 		}
 		uki := filepath.Join(root, "boot/efi", strings.TrimPrefix(efi, "/"))
-		keyFile, err := os.CreateTemp("", "fisherman-pcrpkey-*")
-		if err != nil {
+		// Fail here rather than at the next boot. An unsigned UKI on the ESP of
+		// a secure install is unbootable under enforced Secure Boot, and the
+		// only symptom the firmware offers is `Invalid parameter` with no
+		// bootable option -- which cost several rounds to trace back once.
+		// Checking it where the install can still fail loudly is cheap.
+		if err := assertPESigned(uki); err != nil {
 			return nil, err
 		}
-		keyPath := keyFile.Name()
-		keyFile.Close()
-		if err := runner.Run("objcopy", "--dump-section", ".pcrpkey="+keyPath, uki); err != nil {
-			os.Remove(keyPath)
-			return nil, fmt.Errorf("extracting installed UKI PCR key: %w", err)
-		}
-		key, err := os.ReadFile(keyPath)
-		os.Remove(keyPath)
+		key, err := peSection(uki, ".pcrpkey")
 		if err != nil {
-			return nil, fmt.Errorf("reading installed UKI PCR key: %w", err)
+			return nil, fmt.Errorf("extracting installed UKI PCR key: %w", err)
 		}
 		if err := ComparePCRPublicKey(key, rootfsKey); err != nil {
 			return nil, err
@@ -460,20 +457,9 @@ func VerifyInstalled(root, imageRoot string, contract *Contract, expectedCompose
 // section. Returns "" when the section carries no such option, which lets the
 // caller fall back to a BLS options line.
 func composefsIdentityFromUKI(uki string) (string, error) {
-	file, err := os.CreateTemp("", "fisherman-cmdline-*")
+	data, err := peSection(uki, ".cmdline")
 	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
-
-	if err := runner.Run("objcopy", "--dump-section", ".cmdline="+path, uki); err != nil {
 		return "", fmt.Errorf("extracting installed UKI command line: %w", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("reading installed UKI command line: %w", err)
 	}
 	// The section is NUL-padded.
 	for _, field := range strings.Fields(strings.TrimRight(string(data), "\x00")) {
