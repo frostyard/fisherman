@@ -12,10 +12,12 @@ import (
 	"github.com/tuna-os/fisherman/internal/runner"
 )
 
-// SecureArtifactSubtree is the single tree holding every artifact the secure
-// post-install validation needs from the image: the schema-1 contract, the MOK
-// certificate, the PCR public key, and the MOK-signed second stage.
-const SecureArtifactSubtree = "usr/lib/snosi"
+// SecureArtifactSubtrees holds every artifact the secure install needs from the
+// image: the schema-1 contract, the MOK certificate, the PCR public key and the
+// MOK-signed second stage (usr/lib/snosi), plus Debian's Microsoft-signed shim
+// and MokManager (usr/lib/shim), which are what make the ESP chain bootable
+// under Secure Boot.
+var SecureArtifactSubtrees = []string{"usr/lib/snosi", "usr/lib/shim"}
 
 // ExtractSecureImageRoot materialises SecureArtifactSubtree out of the image
 // into dest, producing a directory that can be read with the same relative
@@ -43,11 +45,12 @@ func ExtractSecureImageRoot(image, root, runRoot, driver, dest string) error {
 	// bootc/podman must mount the image from inside the container.
 	args = append(args, "run", "--rm", "--pull=never", "--privileged",
 		"-v", storePath+":/var/lib/containers/storage",
-		image, "tar", "-cf", "-", "-C", "/", SecureArtifactSubtree)
+		image, "tar", "-cf", "-", "-C", "/")
+	args = append(args, SecureArtifactSubtrees...)
 
 	out, err := runner.Output("podman", args...)
 	if err != nil {
-		return fmt.Errorf("extracting %s from the verified image: %w", SecureArtifactSubtree, err)
+		return fmt.Errorf("extracting %v from the verified image: %w", SecureArtifactSubtrees, err)
 	}
 	return untarInto(bytes.NewReader(out), dest)
 }

@@ -848,6 +848,13 @@ func main() {
 		if err != nil {
 			fatal("validating deployed secure contract: %v", err)
 		}
+		// bootc leaves an ESP with plain systemd-boot and no shim, so the
+		// Secure Boot chain has to be staged before anything can validate or
+		// repair it. RepairESP requires all three components to exist.
+		if err := secure.StageESPChain(activeTargetMount, secureImageRoot, secureContract.MOKCertificate); err != nil {
+			fatal("staging secure ESP boot chain: %v", err)
+		}
+		progress.Secure("esp_chain", "staged")
 		if err := secure.RepairESP(activeTargetMount, secureImageRoot, secureContract.MOKCertificate); err != nil {
 			fatal("installing verified secure ESP second stage: %v", err)
 		}
