@@ -1131,7 +1131,10 @@ func main() {
 			// the floors meant provenance answered "what did the contract ask
 			// for", which is already in the contract; the question worth being
 			// able to answer afterwards is "what actually ran".
-			Versions:  secureVersions.Detected,
+			// What produced this system, versus what it validated. Only
+			// fisherman's own version is knowable here; see Provenance.
+			Versions:  map[string]string{"fisherman": version},
+			Validated: secureVersions.Detected,
 			Completed: time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			fatal("writing secure install provenance: %v", err)
