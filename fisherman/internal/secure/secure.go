@@ -36,19 +36,19 @@ var syncFile = func(file *os.File) error { return file.Sync() }
 // fail loudly rather than silently produce a record that validates as
 // incomplete.
 type Provenance struct {
-	OCIRef      string            `json:"oci_ref"`
-	TrackingRef string            `json:"tracking_ref"`
-	Repository  string            `json:"repository"`
-	Capability  bool              `json:"secure_capability"`
-	Schema      int               `json:"contract_schema"`
-	Assembly    string            `json:"assembly_compatibility"`
-	Composefs   string            `json:"composefs_id"`
-	UKIHash     string            `json:"uki_sha256"`
-	MOKHash     string            `json:"mok_fingerprint"`
-	PCRHash     string            `json:"pcr_fingerprint"`
-	ESPPartUUID string            `json:"esp_partuuid"`
-	LUKSUUID    string            `json:"luks_uuid"`
-	TPMToken    string            `json:"tpm_token_id"`
+	OCIRef      string `json:"oci_ref"`
+	TrackingRef string `json:"tracking_ref"`
+	Repository  string `json:"repository"`
+	Capability  bool   `json:"secure_capability"`
+	Schema      int    `json:"contract_schema"`
+	Assembly    string `json:"assembly_compatibility"`
+	Composefs   string `json:"composefs_id"`
+	UKIHash     string `json:"uki_sha256"`
+	MOKHash     string `json:"mok_fingerprint"`
+	PCRHash     string `json:"pcr_fingerprint"`
+	ESPPartUUID string `json:"esp_partuuid"`
+	LUKSUUID    string `json:"luks_uuid"`
+	TPMToken    string `json:"tpm_token_id"`
 	// installer_versions answers "what produced this system". Only fisherman
 	// is knowable at install time: the medium carries no identifier for the
 	// bootc-installer Flatpak or the Dakota ISO build, and the live
