@@ -19,20 +19,37 @@ var syncFile = func(file *os.File) error { return file.Sync() }
 
 // Provenance is the non-secret record retained in the encrypted root after a
 // successful secure install.
+// Provenance is the record docs/bootc-secure-install-contract.md defines, and
+// the field names here are that contract rather than a local choice. It names
+// fifteen required keys and fixes two of their types:
+//
+//	oci_ref tracking_ref repository secure_capability contract_schema
+//	assembly_compatibility composefs_id uki_sha256 mok_fingerprint
+//	pcr_fingerprint esp_partuuid luks_uuid tpm_token_id installer_versions
+//	completed_at
+//
+//	"secure_capability is JSON boolean true; contract_schema is JSON integer 1"
+//
+// Four keys were previously spelled differently and one was never written at
+// all, so a correct install produced a record the contract check rejected.
+// omitempty is deliberately absent from the required keys: a missing key must
+// fail loudly rather than silently produce a record that validates as
+// incomplete.
 type Provenance struct {
 	OCIRef      string            `json:"oci_ref"`
 	TrackingRef string            `json:"tracking_ref"`
-	Capability  string            `json:"secure_capability"`
+	Repository  string            `json:"repository"`
+	Capability  bool              `json:"secure_capability"`
 	Schema      int               `json:"contract_schema"`
 	Assembly    string            `json:"assembly_compatibility"`
-	Composefs   string            `json:"composefs_id,omitempty"`
+	Composefs   string            `json:"composefs_id"`
 	UKIHash     string            `json:"uki_sha256"`
-	MOKHash     string            `json:"mok_public_key_sha256,omitempty"`
-	PCRHash     string            `json:"pcr_public_key_sha256,omitempty"`
-	ESPPartUUID string            `json:"esp_partuuid,omitempty"`
-	LUKSUUID    string            `json:"luks_uuid,omitempty"`
-	TPMToken    string            `json:"tpm_token,omitempty"`
-	Versions    map[string]string `json:"installer_versions,omitempty"`
+	MOKHash     string            `json:"mok_fingerprint"`
+	PCRHash     string            `json:"pcr_fingerprint"`
+	ESPPartUUID string            `json:"esp_partuuid"`
+	LUKSUUID    string            `json:"luks_uuid"`
+	TPMToken    string            `json:"tpm_token_id"`
+	Versions    map[string]string `json:"installer_versions"`
 	Completed   string            `json:"completed_at"`
 }
 
