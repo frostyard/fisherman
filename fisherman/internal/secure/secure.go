@@ -618,6 +618,31 @@ func restoreSecondStage(boot, target string, previous []byte, mode os.FileMode) 
 	return syncFile(dir)
 }
 
+// persistentVarDir returns the /var the booted system will actually mount.
+//
+// A composefs deployment does not use <root>/var. The persistent /var lives in
+// the stateroot, at state/os/<stateroot>/var, and <root>/var is a different
+// directory that nothing ever mounts. Measured on an installed target:
+//
+//	<root>/var/lib/snosi/                    6 entries, written by the installer
+//	<root>/state/os/default/var/lib/snosi/   95k entries, and the RUNNING system
+//	                                         wrote enablement-manifest.applied here
+//
+// Writing provenance to <root>/var therefore produced a file no booted system
+// could read, and snosi's Task 9 check failed with "No such file or directory"
+// on an otherwise healthy install.
+//
+// Falls back to <root>/var when there is no stateroot, which keeps any
+// non-composefs caller working; the secure path is composefs by contract, so
+// that branch should not be reached there.
+func persistentVarDir(root string) string {
+	matches, err := filepath.Glob(filepath.Join(root, "state/os/*/var"))
+	if err == nil && len(matches) == 1 {
+		return matches[0]
+	}
+	return filepath.Join(root, "var")
+}
+
 // WriteProvenance writes only public installation facts into encrypted /var.
 func WriteProvenance(root string, provenance Provenance) error {
 	if provenance.Completed == "" {
@@ -627,7 +652,7 @@ func WriteProvenance(root string, provenance Provenance) error {
 	if err != nil {
 		return fmt.Errorf("encoding secure install provenance: %w", err)
 	}
-	dir := filepath.Join(root, "var/lib/snosi")
+	dir := filepath.Join(persistentVarDir(root), "lib/snosi")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
