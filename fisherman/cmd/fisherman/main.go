@@ -1114,9 +1114,16 @@ func main() {
 		if !strings.Contains(r.Image, "@sha256:") {
 			fatal("recording secure OCI provenance: immutable digest missing")
 		}
+		// repository is oci_ref without its digest -- the contract requires it
+		// as a separate key so a record can be attributed to a repository
+		// without parsing the reference.
+		repository, _, _ := strings.Cut(r.Image, "@")
 		if err := secure.WriteProvenance(activeTargetMount, secure.Provenance{
-			OCIRef: r.Image, TrackingRef: r.TargetImgref,
-			Capability: secure.CapabilityLabel + "=" + secure.CapabilityValue, Schema: secureContract.Schema,
+			OCIRef: r.Image, TrackingRef: r.TargetImgref, Repository: repository,
+			// JSON boolean true, per the contract -- not the label string. The
+			// label name lives in the image; what provenance records is whether
+			// the capability held.
+			Capability: secure.CapabilityValue == "true", Schema: secureContract.Schema,
 			Assembly: secureContract.Assembly.Compatibility, Composefs: secureArtifacts.ComposefsID, UKIHash: secureArtifacts.UKIHash,
 			MOKHash: secure.PublicFingerprint(mokCertificate), PCRHash: secure.PublicFingerprint(secureArtifacts.PCRPublicKey),
 			ESPPartUUID: espPartUUID, LUKSUUID: activeLuksUUID, TPMToken: tokenID,
