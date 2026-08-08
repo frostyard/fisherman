@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🐛 Bug Fixes
 
+- **Composefs plaintext passwords**: Create user passwords with SHA-512 without
+  requiring PAM modules in the etc-only composefs deployment root.
 - **Signed OCI exports**: Drop source transport signatures when exporting a
   composefs image to a local OCI layout, which cannot store them.
 - **OCI layout for non-composefs installs**: Non-composefs images (bluefin, lts,
