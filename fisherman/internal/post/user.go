@@ -158,13 +158,15 @@ func CreateUser(sysroot string, u UserConfig) error {
 	if u.Password != "" {
 		input := fmt.Sprintf("%s:%s\n", u.Username, u.Password)
 		// A pre-hashed crypt(3) string ("$id$salt$hash", e.g. wootc's vault
-		// $6$ SHA-512) must be written verbatim with -e. Without it chpasswd
-		// (a) treats the hash as a PLAINTEXT password — the account's real
-		// password becomes the literal hash text — and (b) invokes the
-		// hashing stack (PAM/crypt config), which exits 1 on EL10 targets.
+		// $6$ SHA-512) must be written verbatim with -e; otherwise chpasswd
+		// treats the hash as plaintext. For composefs plaintext passwords,
+		// select SHA512 explicitly: the etc-only deploy root has no PAM
+		// modules, and chpasswd otherwise defaults to PAM.
 		flag := []string{}
 		if strings.HasPrefix(u.Password, "$") {
 			flag = []string{"-e"}
+		} else if composefs {
+			flag = []string{"--crypt-method", "SHA512"}
 		}
 		var cpErr error
 		if composefs {

@@ -126,10 +126,57 @@ func TestCreateUserUsesChrootNotRootFlag(t *testing.T) {
 	}
 }
 
+func TestCreateUserOstreePlaintextPasswordUsesChroot(t *testing.T) {
+	sysroot := t.TempDir()
+	deployDir := filepath.Join(sysroot, "ostree", "deploy", "default", "deploy", "abc123.0")
+	if err := os.MkdirAll(deployDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origDeployFn := DeploymentDirFn
+	defer func() { DeploymentDirFn = origDeployFn }()
+	DeploymentDirFn = func(string) (string, error) { return deployDir, nil }
+
+	var chpasswdArgs []string
+	var sawChpasswdInput, chpasswdInputCorrect bool
+	origRunFn := runner.RunFn
+	defer func() { runner.RunFn = origRunFn }()
+	runner.RunFn = func(stdin io.Reader, name string, args ...string) error {
+		if name == "ls" {
+			_, err := os.Stat(args[len(args)-1])
+			return err
+		}
+		if name == "chroot" && len(args) > 1 && args[1] == "chpasswd" {
+			if stdin == nil {
+				return nil
+			}
+			sawChpasswdInput = true
+			input, err := io.ReadAll(stdin)
+			if err != nil {
+				return err
+			}
+			chpasswdInputCorrect = string(input) == "erin:plain-test-pw\n"
+			chpasswdArgs = append([]string{name}, args...)
+		}
+		return nil
+	}
+
+	if err := CreateUser(sysroot, UserConfig{Username: "erin", Password: "plain-test-pw"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	wantChpasswd := []string{"chroot", deployDir, "chpasswd"}
+	if strings.Join(chpasswdArgs, "\x00") != strings.Join(wantChpasswd, "\x00") {
+		t.Errorf("chpasswd arguments = %v, want %v", chpasswdArgs, wantChpasswd)
+	}
+	if !sawChpasswdInput || !chpasswdInputCorrect {
+		t.Error("chpasswd did not receive the expected stdin input")
+	}
+}
+
 // composefs-native has no chrootable rootfs during deploy — useradd must run
 // with --root (not chroot), pointed at the deploy root (parent of the
-// state/deploy/<hash>/etc dir). dakota exit-127 regression, GH 20260724T1508.
-func TestCreateUserComposeFsUsesRootFlag(t *testing.T) {
+// state/deploy/<hash>/etc dir). Pre-hashed passwords must bypass PAM with -e.
+func TestCreateUserComposeFsHashedPassword(t *testing.T) {
 	sysroot := t.TempDir()
 	etcDir := filepath.Join(sysroot, "state", "deploy", "abc123", "etc")
 	if err := os.MkdirAll(etcDir, 0o755); err != nil {
@@ -141,13 +188,27 @@ func TestCreateUserComposeFsUsesRootFlag(t *testing.T) {
 	ComposeFsDeployEtcDirFn = func(string) (string, error) { return etcDir, nil }
 
 	var calls [][]string
+	var chpasswdArgs []string
+	var sawChpasswdInput, chpasswdInputCorrect bool
 	origRunFn := runner.RunFn
 	defer func() { runner.RunFn = origRunFn }()
-	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
+	runner.RunFn = func(stdin io.Reader, name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
 		if name == "ls" {
 			_, err := os.Stat(args[len(args)-1])
 			return err
+		}
+		if name == "chpasswd" {
+			if stdin == nil {
+				return nil
+			}
+			sawChpasswdInput = true
+			input, err := io.ReadAll(stdin)
+			if err != nil {
+				return err
+			}
+			chpasswdInputCorrect = string(input) == "carol:$6$s$h\n"
+			chpasswdArgs = append([]string{name}, args...)
 		}
 		return nil
 	}
@@ -167,5 +228,60 @@ func TestCreateUserComposeFsUsesRootFlag(t *testing.T) {
 	}
 	if !sawUseradd {
 		t.Errorf("expected useradd --root %s; calls: %v", wantRoot, calls)
+	}
+	wantChpasswd := []string{"chpasswd", "--root", wantRoot, "-e"}
+	if strings.Join(chpasswdArgs, "\x00") != strings.Join(wantChpasswd, "\x00") {
+		t.Errorf("chpasswd arguments = %v, want %v", chpasswdArgs, wantChpasswd)
+	}
+	if !sawChpasswdInput || !chpasswdInputCorrect {
+		t.Error("chpasswd did not receive the expected stdin input")
+	}
+}
+
+func TestCreateUserComposeFsPlaintextPassword(t *testing.T) {
+	sysroot := t.TempDir()
+	etcDir := filepath.Join(sysroot, "state", "deploy", "abc123", "etc")
+	if err := os.MkdirAll(etcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origEtcFn := ComposeFsDeployEtcDirFn
+	defer func() { ComposeFsDeployEtcDirFn = origEtcFn }()
+	ComposeFsDeployEtcDirFn = func(string) (string, error) { return etcDir, nil }
+
+	var chpasswdArgs []string
+	var sawChpasswdInput, chpasswdInputCorrect bool
+	origRunFn := runner.RunFn
+	defer func() { runner.RunFn = origRunFn }()
+	runner.RunFn = func(stdin io.Reader, name string, args ...string) error {
+		if name == "ls" {
+			_, err := os.Stat(args[len(args)-1])
+			return err
+		}
+		if name == "chpasswd" {
+			if stdin == nil {
+				return nil
+			}
+			sawChpasswdInput = true
+			input, err := io.ReadAll(stdin)
+			if err != nil {
+				return err
+			}
+			chpasswdInputCorrect = string(input) == "dave:plain-test-pw\n"
+			chpasswdArgs = append([]string{name}, args...)
+		}
+		return nil
+	}
+
+	if err := CreateUser(sysroot, UserConfig{Username: "dave", Password: "plain-test-pw"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	wantRoot := filepath.Join(sysroot, "state", "deploy", "abc123")
+	wantChpasswd := []string{"chpasswd", "--root", wantRoot, "--crypt-method", "SHA512"}
+	if strings.Join(chpasswdArgs, "\x00") != strings.Join(wantChpasswd, "\x00") {
+		t.Errorf("chpasswd arguments = %v, want %v", chpasswdArgs, wantChpasswd)
+	}
+	if !sawChpasswdInput || !chpasswdInputCorrect {
+		t.Error("chpasswd did not receive the expected stdin input")
 	}
 }

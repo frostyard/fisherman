@@ -114,8 +114,10 @@ type Recipe struct {
 // UserSpec describes a user account to create during installation.
 // If Username is empty the user creation step is skipped.
 type UserSpec struct {
-	Username string   `json:"username"`
-	Fullname string   `json:"fullname"`
+	Username string `json:"username"`
+	Fullname string `json:"fullname"`
+	// Password accepts plaintext or a modular-crypt value. Plaintext is hashed
+	// during installation; values beginning with "$" are passed to chpasswd -e.
 	Password string   `json:"password"`
 	Groups   []string `json:"groups"`
 }

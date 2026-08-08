@@ -141,6 +141,25 @@ it never uses the installer's active host root mapper.
 
 For `luks-passphrase` and `tpm2-luks-passphrase`, add `"passphrase": "hunter2"` inside the `encryption` object.
 
+### User account
+
+The optional `user` object creates an account during installation:
+
+```json
+{
+  "user": {
+    "username": "core",
+    "fullname": "Core User",
+    "password": "plaintext-password",
+    "groups": ["sudo"]
+  }
+}
+```
+
+`user.password` accepts plaintext or a modular-crypt value. Plaintext is hashed
+during installation. Values beginning with `$` are passed to `chpasswd -e` and
+written unchanged; Fisherman does not validate their crypt format.
+
 ## Image catalog
 
 `data/images.json` is a recursive JSON tree of distro groups and leaf images consumed by tuna-installer's image picker. It can be overridden at runtime:
