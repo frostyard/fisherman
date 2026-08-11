@@ -351,8 +351,15 @@ bootcrew-ci-test IMAGE_JSON:
     local -a mopts=()
     # For btrfs subvolume installs the loader/entries live inside @, not the
     # btrfs top-level, so mount subvol=@ or the BLS patch loop finds nothing.
-    if [ "$BTRFS_SUBVOLUMES" = "true" ] && [ "$label" != "EFI" ]; then
-      mopts=(-o subvol=@)
+    # Gate on the partition actually being btrfs: with a GRUB layout the
+    # separate /boot is ext4, and -o subvol=@ would make that mount fail and
+    # silently skip patching.
+    if [ "$BTRFS_SUBVOLUMES" = "true" ]; then
+      local fstype
+      fstype=$(sudo blkid -s TYPE -o value "$part" 2>/dev/null || true)
+      if [ "$fstype" = "btrfs" ]; then
+        mopts=(-o subvol=@)
+      fi
     fi
     sudo mount "${mopts[@]}" "$part" "$MNT" 2>/dev/null || { rmdir "$MNT" 2>/dev/null; return; }
     local patched=0
