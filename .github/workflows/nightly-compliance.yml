@@ -1,0 +1,33 @@
+name: Nightly compliance
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy-and-code:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fisherman/go.mod
+          cache: true
+          cache-dependency-path: fisherman/go.sum
+      - name: Validate repository policy contracts
+        run: |
+          tests/check-acmm-artifacts.sh
+          tests/check-ci-workflows.sh
+          tests/check-release.sh
+          tests/check-validation.sh
+      - name: Build, test, and vet
+        working-directory: fisherman
+        run: |
+          go build ./cmd/fisherman
+          go test ./...
+          go vet ./...
