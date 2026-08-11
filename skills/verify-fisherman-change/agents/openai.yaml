@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Fisherman Change"
+  short_description: "Validate Fisherman changes safely"
+  default_prompt: "Verify this Fisherman change with checks proportional to its install-path risk."

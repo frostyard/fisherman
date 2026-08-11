@@ -1,0 +1,21 @@
+---
+description: Fisherman repository development and safety rules
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# Fisherman rules
+
+Read and follow `AGENTS.md`; it is the authoritative repository guide.
+
+- Run Go tooling from the nested `fisherman/` module.
+- Base changes on `origin/dev` and target PRs to `dev`.
+- Preserve validation-before-destruction, fail-closed security, and cleanup on
+  every error path.
+- Never expose credentials or operate on a disk that is not explicitly known
+  to be disposable.
+- Add focused tests and run build, test, and vet checks.
+- Require a complete disposable-disk/VM install and successful boot for changes
+  to partitioning, filesystems, encryption, mounts, installation, boot, or
+  post-install configuration.
