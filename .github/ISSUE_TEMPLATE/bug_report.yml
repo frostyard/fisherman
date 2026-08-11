@@ -1,0 +1,82 @@
+name: Bug report
+description: Report a reproducible fisherman failure or regression.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fisherman can modify disks irreversibly. Redact passwords, recovery
+        keys, tokens, and other secrets before attaching recipes or logs.
+  - type: input
+    id: version
+    attributes:
+      label: Fisherman version
+      description: Provide a release version or commit SHA.
+      placeholder: v0.2.17 or f97f5c6
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Describe the live ISO/OS, architecture, firmware mode, and hardware or VM.
+      placeholder: Frostyard live ISO, x86_64, UEFI, Framework 13
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Failure stage
+      options:
+        - Recipe validation
+        - Partition or format
+        - Encryption
+        - Mount
+        - Image pull or install
+        - Post-install configuration
+        - Finalize
+        - First boot
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest reliable sequence that triggers the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: recipe
+    attributes:
+      label: Recipe
+      description: Paste the redacted JSON recipe.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant redacted fisherman output.
+      render: shell
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed passwords, recovery keys, tokens, and other secrets from this report.
+          required: true
+        - label: I confirmed the selected target disk and understand that reproduction may destroy its contents.
+          required: true
