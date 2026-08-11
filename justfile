@@ -256,6 +256,7 @@ bootcrew-ci-test IMAGE_JSON:
   IMAGE_JSON='{{ IMAGE_JSON }}'
   IMAGE=$(echo "$IMAGE_JSON" | jq -r '.image')
   FILESYSTEM=$(echo "$IMAGE_JSON" | jq -r '.filesystem // "xfs"')
+  BTRFS_SUBVOLUMES=$(echo "$IMAGE_JSON" | jq -r '.btrfs_subvolumes // false')
   COMPOSEFS=$(echo "$IMAGE_JSON" | jq -r '.composefs_backend // false')
   UNIFIED=$(echo "$IMAGE_JSON" | jq -r '.unified_storage // false')
   SELINUX=$(echo "$IMAGE_JSON" | jq -r '.selinux_disabled // false')
@@ -316,6 +317,7 @@ bootcrew-ci-test IMAGE_JSON:
   {
     "disk": "$LOOPDEV",
     "filesystem": "$FILESYSTEM",
+    "btrfsSubvolumes": $BTRFS_SUBVOLUMES,
     "composeFsBackend": $COMPOSEFS,
     "unifiedStorage": $UNIFIED,
     "selinuxDisabled": $SELINUX,
