@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "coverage": {
+    "floorPercent": 42,
+    "ratchet": "increase-only",
+    "headroomPercent": 2,
+    "maximumAnnualIncreasePercent": 5
+  },
+  "guardrails": {
+    "allowAutomaticThresholdReduction": false,
+    "requirePullRequest": true,
+    "requireInstallEvidenceForInstallerChanges": true
+  }
+}

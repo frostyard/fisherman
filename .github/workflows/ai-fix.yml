@@ -1,0 +1,63 @@
+name: AI fix request handoff
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Existing issue to prepare for an AI-assisted fix
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  prepare:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'ai-fix-requested'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate and record the handoff
+        uses: actions/github-script@v7
+        env:
+          REQUESTED_ISSUE: ${{ inputs.issue_number || github.event.issue.number }}
+        with:
+          script: |
+            const issue_number = Number(process.env.REQUESTED_ISSUE);
+            if (!Number.isSafeInteger(issue_number) || issue_number < 1) {
+              core.setFailed('A valid existing issue number is required.');
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const { data: issue } = await github.rest.issues.get({
+              owner, repo, issue_number,
+            });
+            const labels = issue.labels.map((label) =>
+              typeof label === 'string' ? label : label.name
+            );
+            if (!labels.includes('ai-fix-requested')) {
+              core.setFailed('The issue must have the ai-fix-requested label.');
+              return;
+            }
+
+            const marker = '<!-- fisherman-ai-fix-handoff -->';
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number, per_page: 100 }
+            );
+            if (comments.some((comment) => comment.body?.includes(marker))) {
+              core.info('The issue already has an AI-fix handoff.');
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: `${marker}\nAI-assisted fix requested. Before opening a PR:\n\n- work from \`dev\` and target \`dev\`;\n- follow \`AGENTS.md\` and the review rubric;\n- preserve installer and secure-install invariants;\n- include focused tests and exact verification;\n- do not run an install without an explicitly disposable target.\n\nThis workflow records and validates the request; repository write access remains subject to normal branch protection and review.`,
+            });
