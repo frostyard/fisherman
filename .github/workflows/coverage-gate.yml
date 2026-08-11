@@ -1,0 +1,52 @@
+name: Coverage gate
+
+on:
+  pull_request:
+    branches:
+      - dev
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-coverage:
+    name: Go coverage (minimum 42%)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fisherman
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: fisherman/go.mod
+          cache-dependency-path: fisherman/go.mod
+
+      - name: Run tests with coverage
+        run: go test ./... -covermode=atomic -coverprofile=coverage.out
+
+      - name: Enforce coverage floor
+        shell: bash
+        run: |
+          set -euo pipefail
+          coverage="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%", "", $3); print $3}')"
+          echo "Total statement coverage: ${coverage}% (required: 42.0%)"
+          awk -v coverage="$coverage" 'BEGIN { exit !(coverage + 0 >= 42.0) }'
+
+      - name: Upload coverage profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fisherman-coverage
+          path: fisherman/coverage.out
+          retention-days: 7
