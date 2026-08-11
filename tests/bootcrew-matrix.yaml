@@ -48,6 +48,7 @@ images:
   - name: frostyard-snow
     image: ghcr.io/frostyard/snow:mechanics
     filesystem: btrfs
+    btrfs_subvolumes: true
     composefs_backend: true
     bootloader: systemd
     unified_storage: false
