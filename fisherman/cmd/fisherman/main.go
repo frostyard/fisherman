@@ -913,6 +913,12 @@ func main() {
 		if err := disk.SetPartitionType(r.Disk, 2, disk.GPTPartTypeLinuxRootX86_64); err != nil {
 			fatal("retagging root partition: %v", err)
 		}
+		// sfdisk's BLKRRPART re-read can leave the partition device node briefly
+		// absent; block until it reappears so the remount below does not race a
+		// transiently missing /dev/<disk>p2 (issue #32).
+		if err := disk.WaitForPartition(r.Disk, 2, 10*time.Second); err != nil {
+			fatal("waiting for root partition after retagging: %v", err)
+		}
 		// Remount root so finalization and post-install writes can proceed.
 		// udisksctl unmount (used by UnmountPartition above) removes the
 		// mountpoint directory it manages, and disk.Mount — unlike
@@ -926,7 +932,7 @@ func main() {
 		// through state/deploy inside that subvolume. Remounting without subvol=@
 		// would expose the btrfs top-level instead, where state/deploy does not
 		// exist, causing "finding composefs deploy etc" to fail.
-		if err := disk.RemountRoot(r.Disk, 2, activeTargetMount, r.BtrfsSubvolumes); err != nil {
+		if err := disk.RemountRoot(r.Disk, 2, activeTargetMount, r.Filesystem, r.BtrfsSubvolumes); err != nil {
 			fatal("remounting root partition after retagging: %v", err)
 		}
 		// Remount EFI so that Plymouth/LUKS arg writes land on the real ESP

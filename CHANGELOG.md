@@ -24,7 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `disk.BtrfsRootMountOpts` constant. Additionally, `@` is now set as the btrfs
   default subvolume during setup so systemd GPT auto-discovery mounts `@` at
   first boot instead of the btrfs top-level; without this the failure would
-  merely relocate from install time to first boot.
+  merely relocate from install time to first boot. The post-retag remount is now
+  filesystem-typed (`mount -t <fs>`) so the deployer initramfs cannot misdetect a
+  freshly-created ext4/xfs root, and it waits for the partition device node to
+  reappear after `sfdisk --part-type`'s BLKRRPART re-read before mounting, closing
+  a `/dev/<disk>p2`-disappearing race.
 - **OCI layout for non-composefs installs**: Non-composefs images (bluefin, lts,
   lts-hwe) now export to an OCI layout at scratch and use `--source-imgref oci:...`
   for `bootc install to-filesystem`. The previous VFS squash path corrupted ostree

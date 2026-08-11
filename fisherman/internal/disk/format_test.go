@@ -229,19 +229,26 @@ func TestSetupBtrfsSubvolumes(t *testing.T) {
 // for btrfs subvolume installs it MUST be remounted with subvol=@ so post-install
 // writes reach the @ subvolume where the composefs deployment lives. A bare
 // remount exposes the btrfs top-level, where state/deploy does not exist.
+//
+// It also asserts the remount is filesystem-typed (-t <fstype>): a typeless
+// mount of a freshly-created xfs/ext4 root can be misdetected in the deployer
+// initramfs (see MountType), so RemountRoot must thread the filesystem through.
 func TestRemountRoot(t *testing.T) {
 	tests := []struct {
 		name         string
+		filesystem   string
 		btrfsSubvols bool
-		wantOpts     bool // whether -o <opts> should be present
+		wantSubvol   bool // whether subvol=@ opts should be present
 	}{
-		{name: "btrfs subvolumes preserves subvol=@", btrfsSubvols: true, wantOpts: true},
-		{name: "non-subvolume remounts bare", btrfsSubvols: false, wantOpts: false},
+		{name: "btrfs subvolumes preserves subvol=@", filesystem: "btrfs", btrfsSubvols: true, wantSubvol: true},
+		{name: "btrfs without subvolumes has no subvol opts", filesystem: "btrfs", btrfsSubvols: false, wantSubvol: false},
+		{name: "ext4 mounts typed with no subvol opts", filesystem: "ext4", btrfsSubvols: false, wantSubvol: false},
+		{name: "xfs mounts typed with no subvol opts", filesystem: "xfs", btrfsSubvols: false, wantSubvol: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := setupRecorder(t)
-			if err := disk.RemountRoot("/dev/nvme0n1", 2, "/mnt/fisherman-target", tt.btrfsSubvols); err != nil {
+			if err := disk.RemountRoot("/dev/nvme0n1", 2, "/mnt/fisherman-target", tt.filesystem, tt.btrfsSubvols); err != nil {
 				t.Fatalf("RemountRoot: %v", err)
 			}
 			if len(rec.calls) != 1 {
@@ -257,6 +264,17 @@ func TestRemountRoot(t *testing.T) {
 			if c.args[len(c.args)-1] != "/mnt/fisherman-target" {
 				t.Errorf("target arg = %q, want /mnt/fisherman-target", c.args[len(c.args)-1])
 			}
+			// Must mount with an explicit filesystem type.
+			fstype := ""
+			for i, arg := range c.args {
+				if arg == "-t" && i+1 < len(c.args) {
+					fstype = c.args[i+1]
+					break
+				}
+			}
+			if fstype != tt.filesystem {
+				t.Errorf("mount -t = %q, want %q (args: %v)", fstype, tt.filesystem, c.args)
+			}
 			opts := ""
 			for i, arg := range c.args {
 				if arg == "-o" && i+1 < len(c.args) {
@@ -264,7 +282,7 @@ func TestRemountRoot(t *testing.T) {
 					break
 				}
 			}
-			if tt.wantOpts {
+			if tt.wantSubvol {
 				if !strings.Contains(opts, "subvol=@") {
 					t.Errorf("btrfs remount opts %q missing subvol=@", opts)
 				}
@@ -272,7 +290,7 @@ func TestRemountRoot(t *testing.T) {
 					t.Errorf("btrfs remount opts %q missing compress=zstd:1", opts)
 				}
 			} else if opts != "" {
-				t.Errorf("non-subvolume remount should have no -o opts, got %q", opts)
+				t.Errorf("%s remount should have no -o opts, got %q", tt.filesystem, opts)
 			}
 		})
 	}

@@ -100,16 +100,22 @@ func Mount(dev, target, opts string) error {
 // target after an operation that dropped the mount, such as retagging the root
 // GPT type for systemd-boot GPT auto-discovery.
 //
-// When the install uses btrfs subvolumes, the root must be remounted with
-// subvol=@ so that post-install writes land inside the @ subvolume where the
-// composefs deployment (state/deploy) lives. A bare remount would expose the
-// btrfs top-level instead, where state/deploy does not exist.
-func RemountRoot(diskDev string, partNum int, target string, btrfsSubvols bool) error {
+// It mounts with an explicit filesystem type via MountType: the deployer
+// initramfs lacks the libblkid probe path a typeless mount relies on, so a bare
+// remount of a freshly-created xfs/ext4 root can be misdetected and fail
+// (see MountType). The filesystem must therefore be threaded through from the
+// recipe, mirroring the normal root mount at install time.
+//
+// When the install uses btrfs subvolumes, the root is remounted with subvol=@
+// so post-install writes land inside the @ subvolume where the composefs
+// deployment (state/deploy) lives. A bare remount would expose the btrfs
+// top-level instead, where state/deploy does not exist.
+func RemountRoot(diskDev string, partNum int, target, filesystem string, btrfsSubvols bool) error {
 	opts := ""
-	if btrfsSubvols {
+	if filesystem == "btrfs" && btrfsSubvols {
 		opts = BtrfsRootMountOpts
 	}
-	return Mount(PartName(diskDev, partNum), target, opts)
+	return MountType(PartName(diskDev, partNum), target, filesystem, opts)
 }
 
 // MountTmpfs mounts a tmpfs of the given size (e.g. "4G") at path, creating
