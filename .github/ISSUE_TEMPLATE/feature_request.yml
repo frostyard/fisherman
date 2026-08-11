@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a focused improvement to fisherman.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or installer problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the desired behavior and recipe or CLI changes, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe existing workarounds or other designs you considered.
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: How can this be tested safely, including a complete install when the install path changes?
+    validations:
+      required: true
