@@ -1,0 +1,1 @@
+{"date":"2026-08-10","scope":"repository-layout","incorrect":"Run Go commands from the Git repository root.","correct":"Run Go commands from the nested fisherman/ module because that directory contains go.mod.","evidence":"fisherman/go.mod"}
