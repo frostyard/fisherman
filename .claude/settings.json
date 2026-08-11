@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Bash(dd:*)",
+      "Bash(fisherman:*)",
+      "Bash(mkfs:*)",
+      "Bash(mkfs.*:*)",
+      "Bash(parted:*)",
+      "Bash(sfdisk:*)",
+      "Bash(sgdisk:*)",
+      "Bash(sudo dd:*)",
+      "Bash(sudo fisherman:*)",
+      "Bash(sudo mkfs:*)",
+      "Bash(sudo mkfs.*:*)",
+      "Bash(sudo parted:*)",
+      "Bash(sudo sfdisk:*)",
+      "Bash(sudo sgdisk:*)",
+      "Bash(sudo wipefs:*)",
+      "Bash(sudo cryptsetup luksFormat:*)",
+      "Bash(wipefs:*)",
+      "Bash(cryptsetup luksFormat:*)"
+    ]
+  }
+}
