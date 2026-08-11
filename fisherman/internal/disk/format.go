@@ -10,6 +10,13 @@ import (
 	"github.com/tuna-os/fisherman/internal/runner"
 )
 
+// BtrfsRootMountOpts are the mount options used for the root btrfs subvolume
+// layout (@, @home, @snapshots). The installed system's state/deploy tree lives
+// inside the @ subvolume, so any (re)mount of the root partition that post-install
+// steps write through must use these options; a bare mount would expose the
+// btrfs top-level instead, where state/deploy does not exist.
+const BtrfsRootMountOpts = "subvol=@,compress=zstd:1"
+
 // FormatEFI formats a partition as FAT32 for use as the EFI System Partition.
 func FormatEFI(part string) error {
 	return runner.Run("mkfs.fat", "-F32", "-n", "EFI-SYSTEM", part)
@@ -89,6 +96,22 @@ func Mount(dev, target, opts string) error {
 	return nil
 }
 
+// RemountRoot remounts the root partition (partition partNum of diskDev) at
+// target after an operation that dropped the mount, such as retagging the root
+// GPT type for systemd-boot GPT auto-discovery.
+//
+// When the install uses btrfs subvolumes, the root must be remounted with
+// subvol=@ so that post-install writes land inside the @ subvolume where the
+// composefs deployment (state/deploy) lives. A bare remount would expose the
+// btrfs top-level instead, where state/deploy does not exist.
+func RemountRoot(diskDev string, partNum int, target string, btrfsSubvols bool) error {
+	opts := ""
+	if btrfsSubvols {
+		opts = BtrfsRootMountOpts
+	}
+	return Mount(PartName(diskDev, partNum), target, opts)
+}
+
 // MountTmpfs mounts a tmpfs of the given size (e.g. "4G") at path, creating
 // the directory if needed.
 func MountTmpfs(path, size string) error {
@@ -117,8 +140,17 @@ func UmountRecursive(path string) error {
 }
 
 // SetupBtrfsSubvolumes creates @, @home, and @snapshots subvolumes on a
-// freshly-formatted btrfs device, then remounts the target using subvol=@
-// with zstd compression.
+// freshly-formatted btrfs device, sets @ as the btrfs default subvolume, then
+// remounts the target using subvol=@ with zstd compression.
+//
+// Setting @ as the default subvolume is required for boot: composefs +
+// systemd-boot installs rely on systemd GPT auto-discovery to mount the root
+// partition, and the generator mounts whatever btrfs subvolume is default
+// (top-level, subvolid 5, unless changed). Without set-default @, the booted
+// system would mount the btrfs top-level — where the composefs deployment
+// (state/deploy) does not exist — and fail exactly as the install-time bug did,
+// only relocated to first boot. The subvol=@ mount here keeps the installer's
+// view consistent with the booted system.
 func SetupBtrfsSubvolumes(dev, target string) error {
 	// Bare mount to create subvolumes.
 	if err := Mount(dev, target, ""); err != nil {
@@ -133,12 +165,20 @@ func SetupBtrfsSubvolumes(dev, target string) error {
 		}
 	}
 
+	// Make @ the default subvolume so systemd GPT auto-discovery mounts it at
+	// boot instead of the btrfs top-level.
+	progress.Info("Setting btrfs default subvolume to @")
+	if err := runner.Run("btrfs", "subvolume", "set-default", target+"/@"); err != nil {
+		_ = Umount(target)
+		return fmt.Errorf("set default subvolume @: %w", err)
+	}
+
 	if err := Umount(target); err != nil {
 		return fmt.Errorf("umount after subvolume creation: %w", err)
 	}
 
 	// Remount with the @ subvolume and transparent compression.
-	return Mount(dev, target, "subvol=@,compress=zstd:1")
+	return Mount(dev, target, BtrfsRootMountOpts)
 }
 
 // FormatBoot formats a partition as ext4 for use as /boot.

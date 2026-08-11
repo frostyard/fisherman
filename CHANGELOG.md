@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requiring PAM modules in the etc-only composefs deployment root.
 - **Signed OCI exports**: Drop source transport signatures when exporting a
   composefs image to a local OCI layout, which cannot store them.
+- **btrfs subvolume install: hostname/flatpak post-steps failed**: On btrfs
+  installs with subvolumes, retagging the root partition for GPT auto-discovery
+  remounted the root partition without `subvol=@`, exposing the btrfs top-level
+  instead of the `@` subvolume. Post-install steps that write through
+  `state/deploy` (hostname, system Flatpaks) then failed with
+  "finding composefs deploy etc: reading composefs deploy base …/state/deploy:
+  no such file or directory", aborting the install at 99%. The remount now
+  reuses the `subvol=@,compress=zstd:1` options via the new
+  `disk.BtrfsRootMountOpts` constant. Additionally, `@` is now set as the btrfs
+  default subvolume during setup so systemd GPT auto-discovery mounts `@` at
+  first boot instead of the btrfs top-level; without this the failure would
+  merely relocate from install time to first boot.
 - **OCI layout for non-composefs installs**: Non-composefs images (bluefin, lts,
   lts-hwe) now export to an OCI layout at scratch and use `--source-imgref oci:...`
   for `bootc install to-filesystem`. The previous VFS squash path corrupted ostree
