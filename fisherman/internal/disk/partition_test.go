@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tuna-os/fisherman/internal/disk"
 	"github.com/tuna-os/fisherman/internal/runner"
@@ -90,8 +92,8 @@ func TestSetPartitionType(t *testing.T) {
 		t.Fatalf("SetPartitionType: %v", err)
 	}
 
-	if len(rec.calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(rec.calls))
+	if len(rec.calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d: %+v", len(rec.calls), rec.calls)
 	}
 	call := rec.calls[0]
 	if call.name != "sfdisk" {
@@ -100,6 +102,39 @@ func TestSetPartitionType(t *testing.T) {
 	wantArgs := []string{"--part-type", "/dev/vda", "2", disk.GPTPartTypeLinuxRootX86_64}
 	if !equalSlice(call.args, wantArgs) {
 		t.Errorf("args = %v, want %v", call.args, wantArgs)
+	}
+	// sfdisk's BLKRRPART re-read can transiently drop the partition node, so
+	// SetPartitionType must settle udev before a caller reopens the device.
+	if rec.calls[1].name != "udevadm" || len(rec.calls[1].args) == 0 || rec.calls[1].args[0] != "settle" {
+		t.Errorf("second call = %+v, want udevadm settle", rec.calls[1])
+	}
+}
+
+// TestWaitForPartition covers the post-retag device-node race (issue #32):
+// sfdisk's BLKRRPART re-read can leave /dev/<disk>pN briefly absent, and a
+// remount must not race it. WaitForPartition returns once the node exists and
+// errors if it never appears within the timeout.
+func TestWaitForPartition(t *testing.T) {
+	_ = setupRecorder(t) // stub udevadm settle so it does not shell out
+
+	dir := t.TempDir()
+	// Use a disk path ending in a digit so PartName inserts the "p" separator,
+	// mirroring loop/nvme naming: PartName(dir+"/disk0", 2) → dir/disk0p2.
+	diskBase := filepath.Join(dir, "disk0")
+	part := disk.PartName(diskBase, 2)
+
+	// Already present: returns immediately with no error.
+	if err := os.WriteFile(part, []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := disk.WaitForPartition(diskBase, 2, time.Second); err != nil {
+		t.Fatalf("WaitForPartition (present): %v", err)
+	}
+
+	// Never appears: returns an error after the timeout.
+	missing := filepath.Join(dir, "gone0")
+	if err := disk.WaitForPartition(missing, 2, 150*time.Millisecond); err == nil {
+		t.Fatalf("WaitForPartition (missing) = nil, want timeout error")
 	}
 }
 

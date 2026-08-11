@@ -211,9 +211,9 @@ test-checks:
   bash tests/check-validation.sh
 
 # Verify installation partitions and basic structure
-verify-installation LOOPDEV COMPOSEFS LUKS_PASSPHRASE="":
+verify-installation LOOPDEV COMPOSEFS LUKS_PASSPHRASE="" BTRFS_SUBVOLUMES="false":
   #!/bin/bash
-  bash scripts/verify-installation.sh "{{ LOOPDEV }}" "{{ COMPOSEFS }}" "{{ LUKS_PASSPHRASE }}"
+  bash scripts/verify-installation.sh "{{ LOOPDEV }}" "{{ COMPOSEFS }}" "{{ LUKS_PASSPHRASE }}" "{{ BTRFS_SUBVOLUMES }}"
 
 # Verify bootc status on running VM (offline check)
 verify-bootc-offline LOOPDEV COMPOSEFS:
@@ -263,6 +263,7 @@ bootcrew-ci-test IMAGE_JSON:
   IMAGE_NAME=$(echo "$IMAGE_JSON" | jq -r '.name')
   LUKS=$(echo "$IMAGE_JSON" | jq -r '.luks // false')
   LUKS_PASSPHRASE=$(echo "$IMAGE_JSON" | jq -r '.luks_passphrase // ""')
+  BTRFS_SUBVOLUMES=$(echo "$IMAGE_JSON" | jq -r '.btrfs_subvolumes // false')
   SSH_NAME=$(echo "$IMAGE_JSON" | jq -r '.ssh_image_name // .name')
   VM_TIMEOUT=$(echo "$IMAGE_JSON" | jq -r '.vm_timeout // 600')
   
@@ -321,6 +322,7 @@ bootcrew-ci-test IMAGE_JSON:
     "composeFsBackend": $COMPOSEFS,
     "unifiedStorage": $UNIFIED,
     "selinuxDisabled": $SELINUX,
+    "btrfsSubvolumes": $BTRFS_SUBVOLUMES,
     "encryption": $ENCRYPTION,
     "image": "$SSH_IMAGE",
     "hostname": "ci-test",
@@ -338,7 +340,7 @@ bootcrew-ci-test IMAGE_JSON:
   sudo /tmp/fisherman {{ CI_ARTIFACTS }}/recipe.json
   
   # Verify installation (opens LUKS container if passphrase is set).
-  just verify-installation "$LOOPDEV" "$COMPOSEFS" "$LUKS_PASSPHRASE"
+  just verify-installation "$LOOPDEV" "$COMPOSEFS" "$LUKS_PASSPHRASE" "$BTRFS_SUBVOLUMES"
   
   # Patch BLS entries to add console=ttyS0 so that serial output is visible
   # in CI logs and (for LUKS) luks-unlock.py can detect the Plymouth prompt.
@@ -348,7 +350,20 @@ bootcrew-ci-test IMAGE_JSON:
     local part="$1" label="$2"
     local MNT
     MNT=$(mktemp -d)
-    sudo mount "$part" "$MNT" 2>/dev/null || { rmdir "$MNT" 2>/dev/null; return; }
+    local -a mopts=()
+    # For btrfs subvolume installs the loader/entries live inside @, not the
+    # btrfs top-level, so mount subvol=@ or the BLS patch loop finds nothing.
+    # Gate on the partition actually being btrfs: with a GRUB layout the
+    # separate /boot is ext4, and -o subvol=@ would make that mount fail and
+    # silently skip patching.
+    if [ "$BTRFS_SUBVOLUMES" = "true" ]; then
+      local fstype
+      fstype=$(sudo blkid -s TYPE -o value "$part" 2>/dev/null || true)
+      if [ "$fstype" = "btrfs" ]; then
+        mopts=(-o subvol=@)
+      fi
+    fi
+    sudo mount "${mopts[@]}" "$part" "$MNT" 2>/dev/null || { rmdir "$MNT" 2>/dev/null; return; }
     local patched=0
     for conf in "$MNT"/loader/entries/*.conf; do
       [ -f "$conf" ] || continue
