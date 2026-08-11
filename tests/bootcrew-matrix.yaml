@@ -70,6 +70,35 @@ images:
     vm_boot: true
     build_ssh_image: true
 
+  # btrfs subvolumes + composefs + systemd-boot + no encryption. Regression
+  # coverage for #32: SetupBtrfsSubvolumes mounts the root as subvol=@ so bootc
+  # writes the deployment into @/state/deploy, but the composefs GPT-retag path
+  # used to remount the root bare, exposing the btrfs top-level (@, @home,
+  # @snapshots) instead of @. Post-install (hostname, flatpaks) then failed with
+  # "finding composefs deploy etc … state/deploy: no such file or directory",
+  # aborting at 99%. Setting @ as the btrfs default subvolume additionally
+  # ensures systemd GPT auto-discovery mounts @ at first boot rather than the
+  # top-level. Advisory (no `required`) on the small cayo image; the VM boot is
+  # the signal that @ selection at boot actually works.
+  - name: frostyard-cayo-btrfs-subvol
+    image: ghcr.io/frostyard/cayo:mechanics
+    ssh_image_name: frostyard-cayo
+    filesystem: btrfs
+    btrfs_subvolumes: true
+    composefs_backend: true
+    bootloader: systemd
+    unified_storage: false
+    selinux_disabled: false
+    flatpaks: []
+    vm_boot: true
+    # Exercised by bootcrew-vm.yml's full install+boot harness (bootcrew-ci-test,
+    # which plumbs btrfsSubvolumes and mounts subvol=@ for verification). The
+    # lighter bootcrew-nightly.yml inline verify assumes a 3-partition GRUB
+    # layout (p3 root) and bare-mounts the root, which neither matches this
+    # systemd-boot 2-partition layout nor the @ subvolume, so keep it out of
+    # nightly.
+    nightly: false
+
   # ext4 + composefs. btrfs is what Frostyard installs default to and what the
   # other three entries cover, so this is the only leg that exercises
   # FormatRoot's ext4 branch — and that branch is not a trivial variation:

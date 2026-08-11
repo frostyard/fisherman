@@ -154,10 +154,16 @@ func TestSetupBtrfsSubvolumes(t *testing.T) {
 		t.Fatalf("SetupBtrfsSubvolumes: %v", err)
 	}
 
-	// Collect btrfs subvolume create calls.
+	// Collect btrfs subvolume create and set-default calls.
 	var subvolCalls []execCall
+	var setDefaultCalls []execCall
 	for _, c := range rec.calls {
-		if c.name == "btrfs" {
+		if c.name != "btrfs" {
+			continue
+		}
+		if len(c.args) >= 2 && c.args[1] == "set-default" {
+			setDefaultCalls = append(setDefaultCalls, c)
+		} else {
 			subvolCalls = append(subvolCalls, c)
 		}
 	}
@@ -174,6 +180,17 @@ func TestSetupBtrfsSubvolumes(t *testing.T) {
 		if !equalSlice(c.args, wantArgs) {
 			t.Errorf("subvol call %d args = %v, want %v", i, c.args, wantArgs)
 		}
+	}
+
+	// @ must be set as the default subvolume so systemd GPT auto-discovery
+	// mounts it at boot instead of the btrfs top-level. Without this the
+	// install-time bug relocates to first boot (state/deploy not found).
+	if len(setDefaultCalls) != 1 {
+		t.Fatalf("expected 1 btrfs subvolume set-default call, got %d (all calls: %+v)", len(setDefaultCalls), rec.calls)
+	}
+	wantSetDefault := []string{"subvolume", "set-default", target + "/@"}
+	if !equalSlice(setDefaultCalls[0].args, wantSetDefault) {
+		t.Errorf("set-default args = %v, want %v", setDefaultCalls[0].args, wantSetDefault)
 	}
 
 	// Final mount must use subvol=@ and zstd compression.
@@ -200,6 +217,82 @@ func TestSetupBtrfsSubvolumes(t *testing.T) {
 	}
 	if !strings.Contains(opts, "compress=zstd:1") {
 		t.Errorf("final mount opts %q missing compress=zstd:1", opts)
+	}
+}
+
+// ── RemountRoot ───────────────────────────────────────────────────────────
+
+// TestRemountRoot is a regression test for the btrfs-subvolume install that
+// aborted at 99% ("finding composefs deploy etc: reading composefs deploy base
+// …/state/deploy: no such file or directory"). After retagging the root GPT
+// type for systemd-boot GPT auto-discovery, the root partition is remounted;
+// for btrfs subvolume installs it MUST be remounted with subvol=@ so post-install
+// writes reach the @ subvolume where the composefs deployment lives. A bare
+// remount exposes the btrfs top-level, where state/deploy does not exist.
+//
+// It also asserts the remount is filesystem-typed (-t <fstype>): a typeless
+// mount of a freshly-created xfs/ext4 root can be misdetected in the deployer
+// initramfs (see MountType), so RemountRoot must thread the filesystem through.
+func TestRemountRoot(t *testing.T) {
+	tests := []struct {
+		name         string
+		filesystem   string
+		btrfsSubvols bool
+		wantSubvol   bool // whether subvol=@ opts should be present
+	}{
+		{name: "btrfs subvolumes preserves subvol=@", filesystem: "btrfs", btrfsSubvols: true, wantSubvol: true},
+		{name: "btrfs without subvolumes has no subvol opts", filesystem: "btrfs", btrfsSubvols: false, wantSubvol: false},
+		{name: "ext4 mounts typed with no subvol opts", filesystem: "ext4", btrfsSubvols: false, wantSubvol: false},
+		{name: "xfs mounts typed with no subvol opts", filesystem: "xfs", btrfsSubvols: false, wantSubvol: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := setupRecorder(t)
+			if err := disk.RemountRoot("/dev/nvme0n1", 2, "/mnt/fisherman-target", tt.filesystem, tt.btrfsSubvols); err != nil {
+				t.Fatalf("RemountRoot: %v", err)
+			}
+			if len(rec.calls) != 1 {
+				t.Fatalf("expected 1 call, got %d: %+v", len(rec.calls), rec.calls)
+			}
+			c := rec.calls[0]
+			if c.name != "mount" {
+				t.Errorf("name = %q, want mount", c.name)
+			}
+			if c.args[len(c.args)-2] != "/dev/nvme0n1p2" {
+				t.Errorf("device arg = %q, want /dev/nvme0n1p2", c.args[len(c.args)-2])
+			}
+			if c.args[len(c.args)-1] != "/mnt/fisherman-target" {
+				t.Errorf("target arg = %q, want /mnt/fisherman-target", c.args[len(c.args)-1])
+			}
+			// Must mount with an explicit filesystem type.
+			fstype := ""
+			for i, arg := range c.args {
+				if arg == "-t" && i+1 < len(c.args) {
+					fstype = c.args[i+1]
+					break
+				}
+			}
+			if fstype != tt.filesystem {
+				t.Errorf("mount -t = %q, want %q (args: %v)", fstype, tt.filesystem, c.args)
+			}
+			opts := ""
+			for i, arg := range c.args {
+				if arg == "-o" && i+1 < len(c.args) {
+					opts = c.args[i+1]
+					break
+				}
+			}
+			if tt.wantSubvol {
+				if !strings.Contains(opts, "subvol=@") {
+					t.Errorf("btrfs remount opts %q missing subvol=@", opts)
+				}
+				if !strings.Contains(opts, "compress=zstd:1") {
+					t.Errorf("btrfs remount opts %q missing compress=zstd:1", opts)
+				}
+			} else if opts != "" {
+				t.Errorf("%s remount should have no -o opts, got %q", tt.filesystem, opts)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Verify installation partitions and basic structure
-# Usage: ./verify-installation.sh LOOPDEV [COMPOSEFS]
+# Usage: ./verify-installation.sh LOOPDEV [COMPOSEFS] [LUKS_PASSPHRASE] [BTRFS_SUBVOLUMES]
 # Uses dynamic tool discovery for CI and local environments
 
 set -e
@@ -13,6 +13,16 @@ source "$SCRIPT_DIR/find-tools.sh"
 LOOPDEV="${1}"
 COMPOSEFS="${2:-false}"
 LUKS_PASSPHRASE="${3:-}"  # optional; if set, opens the LUKS root container before mounting
+BTRFS_SUBVOLUMES="${4:-false}"  # optional; if true, mount the root with subvol=@
+
+# For btrfs subvolume installs the installed system lives inside the @ subvolume
+# (state/deploy, ostree). A bare mount exposes the btrfs top-level (@, @home,
+# @snapshots) where state/deploy does not exist, so verification would falsely
+# fail. Mount subvol=@ to inspect the same tree the booted system sees.
+ROOT_MOUNT_OPTS=()
+if [ "$BTRFS_SUBVOLUMES" = "true" ]; then
+  ROOT_MOUNT_OPTS=(-o subvol=@)
+fi
 
 if [ -z "$LOOPDEV" ]; then
   echo "❌ Usage: $0 LOOPDEV [COMPOSEFS]"
@@ -124,13 +134,47 @@ if [ -n "$LUKS_PASSPHRASE" ]; then
     echo -n "$LUKS_PASSPHRASE" | $SUDO_BIN cryptsetup luksOpen "$ROOT_PART" "$LUKS_MAPPER" --key-file=-
     LUKS_OPENED=1
     echo "✅ LUKS container opened at /dev/mapper/$LUKS_MAPPER"
-    sudo "$MOUNT_BIN" "/dev/mapper/$LUKS_MAPPER" "$ROOT_DIR"
+    sudo "$MOUNT_BIN" "${ROOT_MOUNT_OPTS[@]}" "/dev/mapper/$LUKS_MAPPER" "$ROOT_DIR"
   else
     echo "⚠️  LUKS_PASSPHRASE provided but $ROOT_PART is not crypto_LUKS (type: $LUKS_TYPE) — mounting directly"
-    sudo "$MOUNT_BIN" "$ROOT_PART" "$ROOT_DIR"
+    sudo "$MOUNT_BIN" "${ROOT_MOUNT_OPTS[@]}" "$ROOT_PART" "$ROOT_DIR"
   fi
 else
-  sudo "$MOUNT_BIN" "$ROOT_PART" "$ROOT_DIR"
+  sudo "$MOUNT_BIN" "${ROOT_MOUNT_OPTS[@]}" "$ROOT_PART" "$ROOT_DIR"
+fi
+
+# Verify the btrfs subvolume layout: SetupBtrfsSubvolumes must create @, @home,
+# and @snapshots, and set @ as the default subvolume so systemd GPT
+# auto-discovery mounts @ (not the top-level) at boot. We mounted subvol=@
+# above, but `btrfs subvolume list` reports every subvolume in the filesystem
+# regardless of which one is mounted, so all three must appear here.
+if [ "$BTRFS_SUBVOLUMES" = "true" ]; then
+  echo "--- btrfs subvolume layout ---"
+  SUBVOL_LIST=$($SUDO_BIN btrfs subvolume list "$ROOT_DIR" 2>/dev/null || true)
+  echo "$SUBVOL_LIST"
+  MISSING=""
+  for sv in @ @home @snapshots; do
+    # Match the trailing "path <sv>" column exactly to avoid @ matching @home.
+    if ! echo "$SUBVOL_LIST" | grep -qE "[[:space:]]path[[:space:]]+${sv}\$"; then
+      MISSING="$MISSING $sv"
+    fi
+  done
+  if [ -n "$MISSING" ]; then
+    echo "FAIL: btrfs subvolume(s) missing:$MISSING (expected @, @home, @snapshots)"
+    exit 1
+  fi
+  echo "✅ btrfs subvolumes present: @, @home, @snapshots"
+
+  # @ must be the default subvolume for boot-time root selection.
+  DEFAULT_SUBVOL=$($SUDO_BIN btrfs subvolume get-default "$ROOT_DIR" 2>/dev/null || true)
+  echo "default subvolume: $DEFAULT_SUBVOL"
+  if ! echo "$DEFAULT_SUBVOL" | grep -qE "[[:space:]]path[[:space:]]+@\$"; then
+    echo "FAIL: btrfs default subvolume is not @ (get-default: $DEFAULT_SUBVOL)"
+    echo "      systemd GPT auto-discovery would mount the btrfs top-level at boot,"
+    echo "      hiding state/deploy — the install-time bug relocated to first boot."
+    exit 1
+  fi
+  echo "✅ btrfs default subvolume is @"
 fi
 
 # Debug: show root structure

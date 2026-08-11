@@ -95,11 +95,41 @@ func UnmountPartition(disk string, partNum int) error {
 }
 
 // SetPartitionType rewrites the GPT type for a single partition on disk.
+//
+// sfdisk --part-type issues a BLKRRPART ioctl that momentarily removes and
+// re-adds the kernel's partition block devices, so /dev/<disk>pN can briefly
+// disappear (issue #32: "/dev/loop0p2 disappearing after sfdisk --part-type").
+// A caller that mounts the partition immediately afterward can race the device
+// node's reappearance. Settle udev here, and expose WaitForPartition so callers
+// can block until the node is ready before mounting.
 func SetPartitionType(disk string, partNum int, partType string) error {
 	if err := runner.Run("sfdisk", "--part-type", disk, strconv.Itoa(partNum), partType); err != nil {
 		return fmt.Errorf("setting partition type: %w", err)
 	}
+	// Let udev process the BLKRRPART-triggered remove/add of partition nodes
+	// before anyone tries to reopen the partition device.
+	_ = runner.Run("udevadm", "settle")
 	return nil
+}
+
+// WaitForPartition blocks until the partition device (partition partNum of
+// diskDev) exists, or the timeout elapses. It is used after operations that
+// perturb the kernel partition table (e.g. SetPartitionType's BLKRRPART) and
+// before reopening the partition, so a remount does not race a transiently
+// absent /dev/<disk>pN. Returns an error only if the node never appears.
+func WaitForPartition(diskDev string, partNum int, timeout time.Duration) error {
+	part := PartName(diskDev, partNum)
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(part); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("partition %s did not appear within %s", part, timeout)
+		}
+		_ = runner.Run("udevadm", "settle")
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // Partition wipes disk and creates a three-partition GPT layout using sfdisk:
